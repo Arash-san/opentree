@@ -1,0 +1,92 @@
+{
+  "name": "opentree",
+  "version": "0.1.0",
+  "description": "Open-source desktop tool for analyzing folders.",
+  "author": "arash-san",
+  "license": "MIT",
+  "main": "dist-electron/index.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/arash-san/opentree.git"
+  },
+  "homepage": "https://github.com/arash-san/opentree",
+  "bugs": {
+    "url": "https://github.com/arash-san/opentree/issues"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"vite --host 127.0.0.1\" \"wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "build:main": "tsup src/main/index.ts src/main/preload.ts src/main/scanner.worker.ts --format cjs --platform node --target node20 --out-dir dist-electron --sourcemap --clean --external electron",
+    "build:renderer": "vite build",
+    "build": "npm run typecheck && npm run test && npm run build:main && npm run build:renderer",
+    "dist": "npm run build && electron-builder --win nsis --x64 --publish never",
+    "release": "npm run build && electron-builder --win nsis --x64 --publish always"
+  },
+  "dependencies": {
+    "electron-updater": "^6.3.9",
+    "fflate": "^0.8.2",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "recharts": "^2.13.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "@vitest/coverage-v8": "^2.1.8",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3",
+    "vitest": "^2.1.8",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "dev.arashsan.opentree",
+    "productName": "OpenTree",
+    "artifactName": "OpenTree-${version}-${os}-${arch}.${ext}",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "arash-san",
+        "repo": "opentree",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "OpenTree"
+    }
+  }
+}
