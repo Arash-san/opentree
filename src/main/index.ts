@@ -77,7 +77,7 @@ public static class OpenTreeShellContextMenu
         [PreserveSig] int CompareIDs(IntPtr lParam, IntPtr pidl1, IntPtr pidl2);
         void CreateViewObject(IntPtr hwndOwner, ref Guid riid, out IntPtr ppv);
         void GetAttributesOf(uint cidl, IntPtr[] apidl, ref uint rgfInOut);
-        void GetUIObjectOf(IntPtr hwndOwner, uint cidl, IntPtr[] apidl, ref Guid riid, IntPtr rgfReserved, out IntPtr ppv);
+        void GetUIObjectOf(IntPtr hwndOwner, uint cidl, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=1)] IntPtr[] apidl, ref Guid riid, IntPtr rgfReserved, out IntPtr ppv);
         void GetDisplayNameOf(IntPtr pidl, uint uFlags, out IntPtr pName);
         void SetNameOf(IntPtr hwnd, IntPtr pidl, [MarshalAs(UnmanagedType.LPWStr)] string pszName, uint uFlags, out IntPtr ppidlOut);
     }
@@ -340,28 +340,40 @@ async function ensureWindowsContextMenuScript(): Promise<string> {
 async function showNativeItemContextMenu(payload: ItemContextMenuRequest, webContents: Electron.WebContents): Promise<boolean> {
   if (process.platform !== "win32") return false;
   const scriptPath = await ensureWindowsContextMenuScript();
-  const child = spawn(
-    "powershell.exe",
-    [
-      "-NoProfile",
-      "-Sta",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      scriptPath,
-      "-Path",
-      payload.path,
-      "-X",
-      String(payload.x),
-      "-Y",
-      String(payload.y),
-      "-Hwnd",
-      nativeWindowHandleText(webContents)
-    ],
-    { detached: true, stdio: "ignore", windowsHide: true }
-  );
-  child.unref();
-  return true;
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "powershell.exe",
+      [
+        "-NoProfile",
+        "-Sta",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        scriptPath,
+        "-Path",
+        payload.path,
+        "-X",
+        String(payload.x),
+        "-Y",
+        String(payload.y),
+        "-Hwnd",
+        nativeWindowHandleText(webContents)
+      ],
+      { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }
+    );
+    let stderr = "";
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", reject);
+    child.on("exit", (code) => {
+      if (code === 0) {
+        resolve(true);
+        return;
+      }
+      reject(new Error(stderr.trim() || `Windows shell context menu exited with code ${code ?? "unknown"}`));
+    });
+  });
 }
 
 function showFallbackItemContextMenu(itemPath: string, webContents: Electron.WebContents): void {
