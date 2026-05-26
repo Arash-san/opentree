@@ -750,10 +750,37 @@ button:disabled {
   padding: 12px;
 }
 
+.empty-action {
+  display: grid;
+  place-items: center;
+  gap: 10px;
+  min-height: 132px;
+  color: #738298;
+  font-size: 13px;
+}
+
+.empty-action button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 0 12px;
+  border: 1px solid #55d6be;
+  border-radius: 8px;
+  color: #061016;
+  background: #55d6be;
+  font-weight: 700;
+}
+
 .compare-list.roomy,
 .single-panel .duplicates-list {
   grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
   align-content: start;
+}
+
+.compare-list.roomy .empty-action,
+.single-panel .duplicates-list .empty-action {
+  grid-column: 1 / -1;
 }
 
 .live-body {
@@ -907,8 +934,25 @@ button:disabled {
 }
 
 .tree-list {
+  position: relative;
   overflow: auto;
   padding: 8px;
+}
+
+.virtual-spacer {
+  position: relative;
+  min-width: 100%;
+}
+
+.file-spacer {
+  min-width: 760px;
+}
+
+.virtual-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
 }
 
 .tree-row {
@@ -917,6 +961,7 @@ button:disabled {
   align-items: center;
   gap: 6px;
   width: 100%;
+  height: 32px;
   min-height: 32px;
   border: 0;
   border-radius: 6px;
@@ -979,6 +1024,50 @@ button:disabled {
   min-width: 0;
   min-height: 0;
   overflow: auto;
+}
+
+.file-grid {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  min-width: 0;
+  min-height: 0;
+}
+
+.file-grid-header,
+.file-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 90px 92px 178px minmax(220px, 1.4fr);
+  align-items: center;
+  min-width: 760px;
+}
+
+.file-grid-header {
+  height: 36px;
+  border-bottom: 1px solid #1c2939;
+  color: #91a0b5;
+  background: #0f1721;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.file-grid-header span,
+.file-row span {
+  overflow: hidden;
+  min-width: 0;
+  padding: 0 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-row {
+  height: 38px;
+  border-bottom: 1px solid #1c2939;
+  color: #d7e1ee;
+  font-size: 12px;
+}
+
+.file-row:hover {
+  background: #142031;
 }
 
 table {

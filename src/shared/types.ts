@@ -137,6 +137,12 @@ export interface UpdateStatus {
   percent?: number;
 }
 
+export interface ItemContextMenuRequest {
+  path: string;
+  x: number;
+  y: number;
+}
+
 export interface ElectronApi {
   chooseFolders(): Promise<string[]>;
   listDrives(): Promise<DriveInfo[]>;
@@ -149,6 +155,7 @@ export interface ElectronApi {
   findDuplicates(payload: {
     options: DuplicateOptions;
   }): Promise<DuplicateGroup[]>;
+  showItemContextMenu(payload: ItemContextMenuRequest): Promise<void>;
   checkForUpdates(): Promise<void>;
   installUpdate(): Promise<void>;
   onScanProgress(callback: (progress: ScanProgress) => void): () => void;

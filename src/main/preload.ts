@@ -1,5 +1,14 @@
 import { contextBridge, ipcRenderer } from "electron";
-import type { DuplicateOptions, ElectronApi, ExportFormat, ScanOptions, ScanProgress, ScanResult, UpdateStatus } from "../shared/types";
+import type {
+  DuplicateOptions,
+  ElectronApi,
+  ExportFormat,
+  ItemContextMenuRequest,
+  ScanOptions,
+  ScanProgress,
+  ScanResult,
+  UpdateStatus
+} from "../shared/types";
 
 const api: ElectronApi = {
   chooseFolders: () => ipcRenderer.invoke("dialog:chooseFolders"),
@@ -11,6 +20,7 @@ const api: ElectronApi = {
   loadIndex: () => ipcRenderer.invoke("scan:loadIndex"),
   compareWithIndex: () => ipcRenderer.invoke("scan:compareWithIndex"),
   findDuplicates: (payload: { options: DuplicateOptions }) => ipcRenderer.invoke("scan:duplicates", payload),
+  showItemContextMenu: (payload: ItemContextMenuRequest) => ipcRenderer.invoke("shell:itemContextMenu", payload),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   installUpdate: () => ipcRenderer.invoke("updates:install"),
   onScanProgress: (callback: (progress: ScanProgress) => void) => {

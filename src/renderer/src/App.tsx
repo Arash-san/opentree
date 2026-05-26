@@ -37,7 +37,7 @@ import {
   TableProperties,
   Zap
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -68,6 +68,9 @@ type ChartMode = "treemap" | "extensions" | "age";
 type AppTab = "overview" | "files" | "duplicates" | "compare" | "exports";
 
 const CHART_COLORS = ["#55d6be", "#68a8ff", "#f3b44e", "#e66d92", "#8f7aff", "#a3e635", "#fb7185"];
+const TREE_ROW_HEIGHT = 32;
+const FILE_ROW_HEIGHT = 38;
+const VIRTUAL_OVERSCAN = 10;
 
 function demoScanResult(root = "C:\\Sample\\Workspace"): ScanResult {
   const scannedAt = new Date().toISOString();
@@ -273,6 +276,7 @@ const fallbackApi: ElectronApi = {
       ]
     }
   ],
+  showItemContextMenu: async () => undefined,
   checkForUpdates: async () => undefined,
   installUpdate: async () => undefined,
   onScanProgress: () => () => undefined,
@@ -292,6 +296,68 @@ function splitPatterns(value: string): string[] {
 
 function useNodeMap(result: ScanResult | null): Map<number, ScanNode> {
   return useMemo(() => new Map(result?.nodes.map((node) => [node.id, node]) ?? []), [result]);
+}
+
+function useVirtualWindow(itemCount: number, rowHeight: number, overscan = VIRTUAL_OVERSCAN) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const frameRef = useRef<number | null>(null);
+  const [viewport, setViewport] = useState({ height: 0, scrollTop: 0 });
+
+  const syncViewport = useCallback(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    setViewport({ height: element.clientHeight, scrollTop: element.scrollTop });
+  }, []);
+
+  useEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return undefined;
+
+    const onScroll = () => {
+      if (frameRef.current !== null) return;
+      frameRef.current = window.requestAnimationFrame(() => {
+        frameRef.current = null;
+        syncViewport();
+      });
+    };
+
+    const resizeObserver = new ResizeObserver(syncViewport);
+    resizeObserver.observe(element);
+    syncViewport();
+    element.addEventListener("scroll", onScroll, { passive: true });
+
+    return () => {
+      element.removeEventListener("scroll", onScroll);
+      resizeObserver.disconnect();
+      if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
+    };
+  }, [syncViewport]);
+
+  const start = Math.max(0, Math.floor(viewport.scrollTop / rowHeight) - overscan);
+  const end = Math.min(itemCount, Math.ceil((viewport.scrollTop + viewport.height) / rowHeight) + overscan);
+
+  const scrollToIndex = useCallback(
+    (index: number) => {
+      const element = scrollRef.current;
+      if (!element || index < 0) return;
+      const rowTop = index * rowHeight;
+      const rowBottom = rowTop + rowHeight;
+      if (rowTop < element.scrollTop) {
+        element.scrollTop = rowTop;
+      } else if (rowBottom > element.scrollTop + element.clientHeight) {
+        element.scrollTop = rowBottom - element.clientHeight;
+      }
+    },
+    [rowHeight]
+  );
+
+  return {
+    end,
+    scrollRef,
+    scrollToIndex,
+    start,
+    totalHeight: itemCount * rowHeight
+  };
 }
 
 function Metric(props: { label: string; value: string; tone?: "cyan" | "green" | "amber" | "rose" }) {
@@ -400,6 +466,51 @@ function ProgressBar({ progress }: { progress: ScanProgress | null }) {
   );
 }
 
+const TreeRow = memo(function TreeRow(props: {
+  node: ScanNode;
+  expanded: boolean;
+  hasChildren: boolean;
+  selected: boolean;
+  top: number;
+  onSelect: (id: number) => void;
+  onToggle: (id: number) => void;
+  onContextMenu: (node: ScanNode, x: number, y: number) => void;
+}) {
+  return (
+    <button
+      className={`tree-row virtual-row ${props.selected ? "selected" : ""}`}
+      type="button"
+      role="treeitem"
+      aria-selected={props.selected}
+      aria-expanded={props.hasChildren ? props.expanded : undefined}
+      onClick={() => props.onSelect(props.node.id)}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        props.onContextMenu(props.node, event.screenX, event.screenY);
+      }}
+      style={{
+        paddingLeft: `${12 + Math.min(props.node.depth, 12) * 14}px`,
+        transform: `translateY(${props.top}px)`
+      }}
+    >
+      <span
+        className="tree-toggle"
+        onClick={(event) => {
+          event.stopPropagation();
+          if (props.hasChildren) props.onToggle(props.node.id);
+        }}
+      >
+        {props.hasChildren ? props.expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
+      </span>
+      <span className="tree-icon">
+        <NodeIcon node={props.node} expanded={props.expanded} />
+      </span>
+      <span className="tree-name">{props.node.name}</span>
+      <span className="tree-size">{formatBytes(props.node.size)}</span>
+    </button>
+  );
+});
+
 function TreeRows(props: {
   result: ScanResult;
   selectedId: number | null;
@@ -407,8 +518,20 @@ function TreeRows(props: {
   search: string;
   onSelect: (id: number) => void;
   onToggle: (id: number) => void;
+  onContextMenu: (node: ScanNode, x: number, y: number) => void;
 }) {
   const byId = useNodeMap(props.result);
+  const childOrder = useMemo(() => {
+    const ordered = new Map<number, number[]>();
+    for (const node of props.result.nodes) {
+      if (node.children.length === 0) continue;
+      ordered.set(
+        node.id,
+        [...node.children].sort((left, right) => (byId.get(right)?.size ?? 0) - (byId.get(left)?.size ?? 0))
+      );
+    }
+    return ordered;
+  }, [byId, props.result]);
   const visible = useMemo(() => {
     const search = props.search.trim().toLowerCase();
     const included = new Set<number>();
@@ -427,23 +550,30 @@ function TreeRows(props: {
     const rows: ScanNode[] = [];
     const visit = (id: number) => {
       const node = byId.get(id);
-      if (!node || rows.length > 800) return;
+      if (!node) return;
       if (search && !included.has(id)) return;
       rows.push(node);
       if (!props.expanded.has(id)) return;
-      for (const childId of [...node.children].sort((left, right) => (byId.get(right)?.size ?? 0) - (byId.get(left)?.size ?? 0))) {
-        visit(childId);
-      }
+      for (const childId of childOrder.get(id) ?? node.children) visit(childId);
     };
 
     for (const rootId of props.result.rootIds) visit(rootId);
     return rows;
-  }, [byId, props.expanded, props.result, props.search]);
-  const selectedIndex = visible.findIndex((node) => node.id === props.selectedId);
+  }, [byId, childOrder, props.expanded, props.result, props.search]);
+  const visibleIndex = useMemo(() => new Map(visible.map((node, index) => [node.id, index])), [visible]);
+  const selectedIndex = props.selectedId === null ? -1 : (visibleIndex.get(props.selectedId) ?? -1);
+  const virtual = useVirtualWindow(visible.length, TREE_ROW_HEIGHT);
 
   function selectedNode(): ScanNode | null {
     if (props.selectedId === null) return null;
     return byId.get(props.selectedId) ?? null;
+  }
+
+  function selectIndex(index: number) {
+    const next = visible[index];
+    if (!next) return;
+    props.onSelect(next.id);
+    virtual.scrollToIndex(index);
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
@@ -452,19 +582,19 @@ function TreeRows(props: {
 
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      const next = visible[Math.min(visible.length - 1, Math.max(0, selectedIndex) + 1)];
-      if (next) props.onSelect(next.id);
+      selectIndex(Math.min(visible.length - 1, Math.max(0, selectedIndex) + 1));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      const previous = visible[Math.max(0, Math.max(0, selectedIndex) - 1)];
-      if (previous) props.onSelect(previous.id);
+      selectIndex(Math.max(0, Math.max(0, selectedIndex) - 1));
     } else if (event.key === "ArrowRight") {
       event.preventDefault();
       if (current.isDirectory && current.children.length > 0 && !props.expanded.has(current.id)) {
         props.onToggle(current.id);
       } else if (current.isDirectory && current.children.length > 0) {
-        const firstVisibleChild = visible.find((node) => node.parentId === current.id);
-        if (firstVisibleChild) props.onSelect(firstVisibleChild.id);
+        const firstVisibleChild = (childOrder.get(current.id) ?? current.children)
+          .map((childId) => visibleIndex.get(childId))
+          .find((index): index is number => index !== undefined);
+        if (firstVisibleChild !== undefined) selectIndex(firstVisibleChild);
       }
     } else if (event.key === "ArrowLeft") {
       event.preventDefault();
@@ -472,6 +602,7 @@ function TreeRows(props: {
         props.onToggle(current.id);
       } else if (current.parentId !== null) {
         props.onSelect(current.parentId);
+        virtual.scrollToIndex(visibleIndex.get(current.parentId) ?? selectedIndex);
       }
     } else if (event.key === "Enter" && current.isDirectory && current.children.length > 0) {
       event.preventDefault();
@@ -480,38 +611,26 @@ function TreeRows(props: {
   }
 
   return (
-    <div className="tree-list" role="tree" tabIndex={0} onKeyDown={handleKeyDown}>
-      {visible.map((node) => {
+    <div className="tree-list" role="tree" tabIndex={0} onKeyDown={handleKeyDown} ref={virtual.scrollRef}>
+      <div className="virtual-spacer" style={{ height: virtual.totalHeight }}>
+        {visible.slice(virtual.start, virtual.end).map((node, offset) => {
         const hasChildren = node.children.length > 0;
         const isExpanded = props.expanded.has(node.id);
         return (
-          <button
-            className={`tree-row ${props.selectedId === node.id ? "selected" : ""}`}
-            type="button"
+          <TreeRow
             key={node.id}
-            role="treeitem"
-            aria-selected={props.selectedId === node.id}
-            aria-expanded={hasChildren ? isExpanded : undefined}
-            onClick={() => props.onSelect(node.id)}
-            style={{ paddingLeft: `${12 + Math.min(node.depth, 12) * 14}px` }}
-          >
-            <span
-              className="tree-toggle"
-              onClick={(event) => {
-                event.stopPropagation();
-                if (hasChildren) props.onToggle(node.id);
-              }}
-            >
-              {hasChildren ? isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
-            </span>
-            <span className="tree-icon">
-              <NodeIcon node={node} expanded={isExpanded} />
-            </span>
-            <span className="tree-name">{node.name}</span>
-            <span className="tree-size">{formatBytes(node.size)}</span>
-          </button>
+            node={node}
+            expanded={isExpanded}
+            hasChildren={hasChildren}
+            selected={props.selectedId === node.id}
+            top={(virtual.start + offset) * TREE_ROW_HEIGHT}
+            onSelect={props.onSelect}
+            onToggle={props.onToggle}
+            onContextMenu={props.onContextMenu}
+          />
         );
       })}
+      </div>
     </div>
   );
 }
@@ -618,7 +737,17 @@ function ChartPanel({ result, mode, setMode }: { result: ScanResult | null; mode
   );
 }
 
-function DetailsTable({ result, selectedId, search }: { result: ScanResult | null; selectedId: number | null; search: string }) {
+function DetailsTable({
+  result,
+  selectedId,
+  search,
+  onContextMenu
+}: {
+  result: ScanResult | null;
+  selectedId: number | null;
+  search: string;
+  onContextMenu: (node: ScanNode, x: number, y: number) => void;
+}) {
   const byId = useNodeMap(result);
   const selected = selectedId === null ? null : byId.get(selectedId);
   const files = useMemo(() => {
@@ -633,8 +762,9 @@ function DetailsTable({ result, selectedId, search }: { result: ScanResult | nul
     return candidates
       .filter((node) => !query || node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query))
       .sort((left, right) => right.size - left.size)
-      .slice(0, 500);
+      .slice(0, 2000);
   }, [result, search, selected]);
+  const virtual = useVirtualWindow(files.length, FILE_ROW_HEIGHT);
 
   return (
     <section className="table-panel">
@@ -644,34 +774,39 @@ function DetailsTable({ result, selectedId, search }: { result: ScanResult | nul
           <span>{files.length.toLocaleString()} visible</span>
         </div>
       </div>
-      <div className="table-scroll">
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              <th>Size</th>
-              <th>Extension</th>
-              <th>Modified</th>
-              <th>Path</th>
-            </tr>
-          </thead>
-          <tbody>
-            {files.map((file) => (
-              <tr key={file.id}>
-                <td>
-                  <span className="file-cell">
-                    <NodeIcon node={file} />
-                    {file.name}
-                  </span>
-                </td>
-                <td>{formatBytes(file.size)}</td>
-                <td>{file.extension}</td>
-                <td>{file.modifiedAt ? new Date(file.modifiedAt).toLocaleString() : ""}</td>
-                <td className="path-cell">{file.path}</td>
-              </tr>
+      <div className="file-grid">
+        <div className="file-grid-header">
+          <span>Name</span>
+          <span>Size</span>
+          <span>Extension</span>
+          <span>Modified</span>
+          <span>Path</span>
+        </div>
+        <div className="table-scroll" ref={virtual.scrollRef}>
+          <div className="virtual-spacer file-spacer" style={{ height: virtual.totalHeight }}>
+            {files.slice(virtual.start, virtual.end).map((file, offset) => (
+              <div
+                className="file-row virtual-row"
+                key={file.id}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onContextMenu(file, event.screenX, event.screenY);
+                }}
+                style={{ transform: `translateY(${(virtual.start + offset) * FILE_ROW_HEIGHT}px)` }}
+              >
+                <span className="file-cell">
+                  <NodeIcon node={file} />
+                  {file.name}
+                </span>
+                <span>{formatBytes(file.size)}</span>
+                <span>{file.extension}</span>
+                <span>{file.modifiedAt ? new Date(file.modifiedAt).toLocaleString() : ""}</span>
+                <span className="path-cell">{file.path}</span>
+              </div>
             ))}
-          </tbody>
-        </table>
+          </div>
+          {files.length === 0 && <div className="empty-state small">No files in view</div>}
+        </div>
       </div>
     </section>
   );
@@ -680,11 +815,13 @@ function DetailsTable({ result, selectedId, search }: { result: ScanResult | nul
 function DuplicatePanel({
   groups,
   loading,
-  onRun
+  onRun,
+  onSaveIndex
 }: {
   groups: DuplicateGroup[];
   loading: boolean;
   onRun: () => void;
+  onSaveIndex: () => void;
 }) {
   const wasted = groups.reduce((total, group) => total + group.wastedBytes, 0);
   return (
@@ -706,7 +843,15 @@ function DuplicatePanel({
             <small>{group.files[0]?.name}</small>
           </div>
         ))}
-        {groups.length === 0 && <div className="empty-state small">No duplicate groups</div>}
+        {groups.length === 0 && (
+          <div className="empty-action">
+            <span>No duplicate groups loaded</span>
+            <button type="button" onClick={onSaveIndex}>
+              <Save size={15} />
+              Save current index
+            </button>
+          </div>
+        )}
       </div>
     </section>
   );
@@ -929,6 +1074,7 @@ export function App() {
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
   const byId = useNodeMap(result);
   const selected = selectedId === null ? null : byId.get(selectedId);
+  const deferredSelectedId = useDeferredValue(selectedId);
   const contentHostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(
@@ -1031,6 +1177,18 @@ export function App() {
     }
   }
 
+  const saveCurrentIndex = useCallback(() => {
+    if (result) void api.saveIndex(result);
+  }, [api, result]);
+
+  const openItemContextMenu = useCallback(
+    (node: ScanNode, x: number, y: number) => {
+      setSelectedId(node.id);
+      void api.showItemContextMenu({ path: node.path, x: Math.round(x), y: Math.round(y) });
+    },
+    [api]
+  );
+
   async function compareWithIndex() {
     if (!result) return;
     setCompareLoading(true);
@@ -1061,14 +1219,14 @@ export function App() {
     await api.exportScan({ result, format });
   }
 
-  function toggleExpanded(id: number) {
+  const toggleExpanded = useCallback((id: number) => {
     setExpanded((previous) => {
       const next = new Set(previous);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  }
+  }, []);
 
   function startPaneResize(event: React.PointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -1203,6 +1361,7 @@ export function App() {
                         search={search}
                         onSelect={setSelectedId}
                         onToggle={toggleExpanded}
+                        onContextMenu={openItemContextMenu}
                       />
                     </section>
                   </div>
@@ -1228,6 +1387,7 @@ export function App() {
                         search={search}
                         onSelect={setSelectedId}
                         onToggle={toggleExpanded}
+                        onContextMenu={openItemContextMenu}
                       />
                     </section>
                     <div
@@ -1237,13 +1397,13 @@ export function App() {
                       aria-label="Resize folder and file panes"
                       onPointerDown={startPaneResize}
                     />
-                    <DetailsTable result={result} selectedId={selectedId} search={search} />
+                    <DetailsTable result={result} selectedId={deferredSelectedId} search={search} onContextMenu={openItemContextMenu} />
                   </div>
                 )}
 
                 {activeTab === "duplicates" && (
                   <div className="tab-single">
-                    <DuplicatePanel groups={duplicates} loading={duplicatesLoading} onRun={runDuplicates} />
+                    <DuplicatePanel groups={duplicates} loading={duplicatesLoading} onRun={runDuplicates} onSaveIndex={saveCurrentIndex} />
                   </div>
                 )}
 
@@ -1273,7 +1433,15 @@ export function App() {
                             <small>{entry.path}</small>
                           </div>
                         ))}
-                        {!compare && <div className="empty-state small">No comparison loaded</div>}
+                        {!compare && (
+                          <div className="empty-action">
+                            <span>No comparison loaded</span>
+                            <button type="button" onClick={saveCurrentIndex}>
+                              <Save size={15} />
+                              Save current index
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </section>
                   </div>
@@ -1283,7 +1451,7 @@ export function App() {
                   <div className="tab-single">
                     <ExportPanel
                       result={result}
-                      onSaveIndex={() => result && void api.saveIndex(result)}
+                      onSaveIndex={saveCurrentIndex}
                       onExport={(format) => void exportAs(format)}
                       onCheckUpdates={() => void api.checkForUpdates()}
                       update={update}
