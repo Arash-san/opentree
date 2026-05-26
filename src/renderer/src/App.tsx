@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  Archive,
   BarChart3,
   Binary,
   Boxes,
@@ -8,11 +9,18 @@ import {
   ChevronRight,
   CircleStop,
   Download,
+  File,
   FileArchive,
+  FileAudio,
+  FileCode2,
+  FileImage,
   FileJson,
   FileSpreadsheet,
   FileText,
+  FileType2,
+  FileVideo,
   Files,
+  Folder,
   FolderOpen,
   GitCompare,
   HardDrive,
@@ -29,7 +37,7 @@ import {
   TableProperties,
   Zap
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   BarChart,
@@ -316,6 +324,37 @@ function IconButton(props: {
   );
 }
 
+function SidebarAction(props: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+  disabled?: boolean;
+  variant?: "primary" | "ghost" | "danger";
+}) {
+  return (
+    <button className={`sidebar-action ${props.variant ?? "ghost"}`} type="button" onClick={props.onClick} disabled={props.disabled}>
+      {props.icon}
+      <span>{props.label}</span>
+    </button>
+  );
+}
+
+function NodeIcon({ node, expanded }: { node: ScanNode; expanded?: boolean }) {
+  if (node.isDirectory) {
+    return expanded ? <FolderOpen size={15} /> : <Folder size={15} />;
+  }
+
+  const extension = node.extension.toLowerCase();
+  if ([".zip", ".rar", ".7z", ".tar", ".gz"].includes(extension)) return <Archive size={15} />;
+  if ([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".ico"].includes(extension)) return <FileImage size={15} />;
+  if ([".mp4", ".mov", ".mkv", ".avi", ".webm"].includes(extension)) return <FileVideo size={15} />;
+  if ([".mp3", ".wav", ".flac", ".aac", ".ogg"].includes(extension)) return <FileAudio size={15} />;
+  if ([".ts", ".tsx", ".js", ".jsx", ".json", ".css", ".html", ".py", ".rs", ".go"].includes(extension)) return <FileCode2 size={15} />;
+  if ([".pdf", ".doc", ".docx", ".md", ".txt", ".rtf"].includes(extension)) return <FileText size={15} />;
+  if (extension && extension !== "(none)") return <FileType2 size={15} />;
+  return <File size={15} />;
+}
+
 function TextInput(props: {
   icon?: React.ReactNode;
   label: string;
@@ -372,17 +411,24 @@ function TreeRows(props: {
   const byId = useNodeMap(props.result);
   const visible = useMemo(() => {
     const search = props.search.trim().toLowerCase();
+    const included = new Set<number>();
+
     if (search) {
-      return props.result.nodes
-        .filter((node) => node.name.toLowerCase().includes(search) || node.path.toLowerCase().includes(search))
-        .sort((left, right) => right.size - left.size)
-        .slice(0, 500);
+      for (const node of props.result.nodes) {
+        if (!node.name.toLowerCase().includes(search) && !node.path.toLowerCase().includes(search)) continue;
+        let current: ScanNode | undefined = node;
+        while (current) {
+          included.add(current.id);
+          current = current.parentId === null ? undefined : byId.get(current.parentId);
+        }
+      }
     }
 
     const rows: ScanNode[] = [];
     const visit = (id: number) => {
       const node = byId.get(id);
       if (!node || rows.length > 800) return;
+      if (search && !included.has(id)) return;
       rows.push(node);
       if (!props.expanded.has(id)) return;
       for (const childId of [...node.children].sort((left, right) => (byId.get(right)?.size ?? 0) - (byId.get(left)?.size ?? 0))) {
@@ -393,16 +439,59 @@ function TreeRows(props: {
     for (const rootId of props.result.rootIds) visit(rootId);
     return rows;
   }, [byId, props.expanded, props.result, props.search]);
+  const selectedIndex = visible.findIndex((node) => node.id === props.selectedId);
+
+  function selectedNode(): ScanNode | null {
+    if (props.selectedId === null) return null;
+    return byId.get(props.selectedId) ?? null;
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>) {
+    const current = selectedNode() ?? visible[0];
+    if (!current) return;
+
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      const next = visible[Math.min(visible.length - 1, Math.max(0, selectedIndex) + 1)];
+      if (next) props.onSelect(next.id);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      const previous = visible[Math.max(0, Math.max(0, selectedIndex) - 1)];
+      if (previous) props.onSelect(previous.id);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      if (current.isDirectory && current.children.length > 0 && !props.expanded.has(current.id)) {
+        props.onToggle(current.id);
+      } else if (current.isDirectory && current.children.length > 0) {
+        const firstVisibleChild = visible.find((node) => node.parentId === current.id);
+        if (firstVisibleChild) props.onSelect(firstVisibleChild.id);
+      }
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (current.isDirectory && props.expanded.has(current.id)) {
+        props.onToggle(current.id);
+      } else if (current.parentId !== null) {
+        props.onSelect(current.parentId);
+      }
+    } else if (event.key === "Enter" && current.isDirectory && current.children.length > 0) {
+      event.preventDefault();
+      props.onToggle(current.id);
+    }
+  }
 
   return (
-    <div className="tree-list">
+    <div className="tree-list" role="tree" tabIndex={0} onKeyDown={handleKeyDown}>
       {visible.map((node) => {
         const hasChildren = node.children.length > 0;
+        const isExpanded = props.expanded.has(node.id);
         return (
           <button
             className={`tree-row ${props.selectedId === node.id ? "selected" : ""}`}
             type="button"
             key={node.id}
+            role="treeitem"
+            aria-selected={props.selectedId === node.id}
+            aria-expanded={hasChildren ? isExpanded : undefined}
             onClick={() => props.onSelect(node.id)}
             style={{ paddingLeft: `${12 + Math.min(node.depth, 12) * 14}px` }}
           >
@@ -413,7 +502,10 @@ function TreeRows(props: {
                 if (hasChildren) props.onToggle(node.id);
               }}
             >
-              {hasChildren ? props.expanded.has(node.id) ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
+              {hasChildren ? isExpanded ? <ChevronDown size={14} /> : <ChevronRight size={14} /> : <span />}
+            </span>
+            <span className="tree-icon">
+              <NodeIcon node={node} expanded={isExpanded} />
             </span>
             <span className="tree-name">{node.name}</span>
             <span className="tree-size">{formatBytes(node.size)}</span>
@@ -438,19 +530,29 @@ function TreemapCell(props: {
   const x = props.x ?? 0;
   const y = props.y ?? 0;
   const color = CHART_COLORS[(props.index ?? 0) % CHART_COLORS.length];
-  const showText = width > 84 && height > 38;
+  const maxChars = Math.max(0, Math.floor((width - 22) / 7));
+  const label = maxChars > 4 ? `${props.name ?? ""}`.slice(0, maxChars) : "";
+  const truncated = label.length < `${props.name ?? ""}`.length ? `${label.slice(0, Math.max(1, label.length - 1))}...` : label;
+  const showName = width > 118 && height > 54 && truncated.length > 0;
+  const showSize = width > 118 && height > 76;
+  const clipId = `treemap-clip-${props.index ?? 0}-${Math.round(x)}-${Math.round(y)}`;
 
   return (
     <g>
       <rect x={x + 2} y={y + 2} width={Math.max(0, width - 4)} height={Math.max(0, height - 4)} rx={5} fill={color} opacity={0.85} />
-      {showText && (
+      <clipPath id={clipId}>
+        <rect x={x + 8} y={y + 8} width={Math.max(0, width - 16)} height={Math.max(0, height - 16)} rx={4} />
+      </clipPath>
+      {showName && (
         <>
-          <text x={x + 10} y={y + 20} fill="#071017" fontSize={12} fontWeight={700}>
-            {props.name}
+          <text x={x + 10} y={y + 24} fill="#071017" fontSize={12} fontWeight={700} clipPath={`url(#${clipId})`}>
+            {truncated}
           </text>
-          <text x={x + 10} y={y + 36} fill="#071017" fontSize={11}>
-            {formatBytes(props.size ?? 0)}
-          </text>
+          {showSize && (
+            <text x={x + 10} y={y + 42} fill="#071017" fontSize={11} clipPath={`url(#${clipId})`}>
+              {formatBytes(props.size ?? 0)}
+            </text>
+          )}
         </>
       )}
     </g>
@@ -556,7 +658,12 @@ function DetailsTable({ result, selectedId, search }: { result: ScanResult | nul
           <tbody>
             {files.map((file) => (
               <tr key={file.id}>
-                <td>{file.name}</td>
+                <td>
+                  <span className="file-cell">
+                    <NodeIcon node={file} />
+                    {file.name}
+                  </span>
+                </td>
                 <td>{formatBytes(file.size)}</td>
                 <td>{file.extension}</td>
                 <td>{file.modifiedAt ? new Date(file.modifiedAt).toLocaleString() : ""}</td>
@@ -814,12 +921,14 @@ export function App() {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [chartMode, setChartMode] = useState<ChartMode>("treemap");
   const [activeTab, setActiveTab] = useState<AppTab>("overview");
+  const [folderPaneWidth, setFolderPaneWidth] = useState(420);
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [compare, setCompare] = useState<CompareResult | null>(null);
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
   const byId = useNodeMap(result);
   const selected = selectedId === null ? null : byId.get(selectedId);
+  const contentHostRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(
     () =>
@@ -848,6 +957,24 @@ export function App() {
       return next;
     });
   }, [result]);
+
+  useEffect(() => {
+    const query = search.trim().toLowerCase();
+    if (!query || !result) return;
+    const byNodeId = new Map(result.nodes.map((node) => [node.id, node]));
+    const matches = result.nodes.filter((node) => node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query));
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      for (const match of matches) {
+        let parentId = match.parentId;
+        while (parentId !== null) {
+          next.add(parentId);
+          parentId = byNodeId.get(parentId)?.parentId ?? null;
+        }
+      }
+      return next;
+    });
+  }, [result, search]);
 
   async function chooseFolders() {
     const picked = await api.chooseFolders();
@@ -938,6 +1065,26 @@ export function App() {
     });
   }
 
+  function startPaneResize(event: React.PointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const bounds = contentHostRef.current?.getBoundingClientRect();
+    if (!bounds) return;
+
+    const onPointerMove = (moveEvent: PointerEvent) => {
+      const next = Math.round(moveEvent.clientX - bounds.left);
+      setFolderPaneWidth(Math.min(Math.max(next, 280), Math.max(320, bounds.width - 360)));
+    };
+    const onPointerUp = () => {
+      document.removeEventListener("pointermove", onPointerMove);
+      document.removeEventListener("pointerup", onPointerUp);
+      document.body.classList.remove("resizing-panes");
+    };
+
+    document.body.classList.add("resizing-panes");
+    document.addEventListener("pointermove", onPointerMove);
+    document.addEventListener("pointerup", onPointerUp);
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -951,32 +1098,44 @@ export function App() {
           </div>
         </div>
 
-        <div className="toolbar">
-          <IconButton title="Choose and scan" icon={<FolderOpen size={17} />} onClick={chooseFolders} variant="primary" disabled={scanning} />
-          <IconButton title="Rescan" icon={scanning ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />} onClick={runScan} disabled={scanning} />
-          <IconButton title="Stop scan" icon={<CircleStop size={17} />} onClick={cancelScan} disabled={!scanning} variant="danger" />
+        <div className="sidebar-section primary-controls">
+          <SidebarAction label="Choose and scan" icon={<FolderOpen size={17} />} onClick={chooseFolders} variant="primary" disabled={scanning} />
+          <SidebarAction label="Rescan" icon={scanning ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />} onClick={runScan} disabled={scanning || roots.length === 0} />
+          <SidebarAction label="Stop" icon={<CircleStop size={17} />} onClick={cancelScan} disabled={!scanning} variant="danger" />
         </div>
 
-        <div className="roots">
-          {roots.map((root) => (
-            <div title={root} key={root}>
-              {root}
-            </div>
-          ))}
-          {roots.length === 0 && <div>No folder selected</div>}
+        <div className="sidebar-card">
+          <div className="sidebar-label">
+            <HardDrive size={14} />
+            Target
+          </div>
+          <div className="roots">
+            {roots.map((root) => (
+              <div title={root} key={root}>
+                {root}
+              </div>
+            ))}
+            {roots.length === 0 && <div>No folder selected</div>}
+          </div>
         </div>
 
-        <TextInput icon={<ListFilter size={15} />} label="Include" value={include} onChange={setInclude} placeholder="*.zip, *.mp4" />
-        <TextInput icon={<ListFilter size={15} />} label="Exclude" value={exclude} onChange={setExclude} placeholder="node_modules, .git" />
-        <div className="grid-fields">
-          <TextInput icon={<Settings2 size={15} />} label="Depth" value={maxDepth} onChange={setMaxDepth} placeholder="all" />
-          <TextInput icon={<Settings2 size={15} />} label="Threads" value={concurrency} onChange={setConcurrency} placeholder="16" />
+        <div className="sidebar-card">
+          <div className="sidebar-label">
+            <Settings2 size={14} />
+            Scan settings
+          </div>
+          <TextInput icon={<ListFilter size={15} />} label="Include" value={include} onChange={setInclude} placeholder="*.zip, *.mp4" />
+          <TextInput icon={<ListFilter size={15} />} label="Exclude" value={exclude} onChange={setExclude} placeholder="node_modules, .git" />
+          <div className="grid-fields">
+            <TextInput icon={<Settings2 size={15} />} label="Depth" value={maxDepth} onChange={setMaxDepth} placeholder="all" />
+            <TextInput icon={<Settings2 size={15} />} label="Threads" value={concurrency} onChange={setConcurrency} placeholder="16" />
+          </div>
+          <Toggle checked={followSymlinks} onChange={setFollowSymlinks} label="Follow links" />
         </div>
-        <Toggle checked={followSymlinks} onChange={setFollowSymlinks} label="Follow links" />
 
-        <div className="action-grid">
-          <IconButton title="Load index" icon={<FileArchive size={16} />} onClick={loadIndex} />
-          <IconButton title="Check updates" icon={<Download size={16} />} onClick={() => void api.checkForUpdates()} />
+        <div className="sidebar-section utility-actions">
+          <SidebarAction label="Load index" icon={<FileArchive size={16} />} onClick={loadIndex} />
+          <SidebarAction label="Updates" icon={<Download size={16} />} onClick={() => void api.checkForUpdates()} />
         </div>
 
         {update.state === "downloaded" && (
@@ -1045,7 +1204,11 @@ export function App() {
                 )}
 
                 {activeTab === "files" && (
-                  <div className="content-grid">
+                  <div
+                    ref={contentHostRef}
+                    className="content-grid resizable-content-grid"
+                    style={{ gridTemplateColumns: `${folderPaneWidth}px 10px minmax(0, 1fr)` }}
+                  >
                     <section className="tree-panel">
                       <div className="panel-head">
                         <div>
@@ -1062,6 +1225,13 @@ export function App() {
                         onToggle={toggleExpanded}
                       />
                     </section>
+                    <div
+                      className="resize-handle"
+                      role="separator"
+                      aria-orientation="vertical"
+                      aria-label="Resize folder and file panes"
+                      onPointerDown={startPaneResize}
+                    />
                     <DetailsTable result={result} selectedId={selectedId} search={search} />
                   </div>
                 )}

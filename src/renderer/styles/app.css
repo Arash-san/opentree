@@ -105,6 +105,75 @@ button:disabled {
   grid-template-columns: repeat(2, 1fr);
 }
 
+.sidebar-section,
+.sidebar-card {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.sidebar-card {
+  padding: 12px;
+  border: 1px solid #1f2d3e;
+  border-radius: 8px;
+  background: rgba(14, 21, 30, 0.72);
+}
+
+.sidebar-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #c7d4e5;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.sidebar-label svg {
+  color: #55d6be;
+}
+
+.primary-controls,
+.utility-actions {
+  grid-template-columns: 1fr;
+}
+
+.sidebar-action {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 10px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 0 12px;
+  border: 1px solid #26374c;
+  border-radius: 8px;
+  color: #dce7f4;
+  background: #111923;
+  font-weight: 700;
+}
+
+.sidebar-action span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-action:hover:not(:disabled) {
+  border-color: #3f5874;
+  background: #162231;
+}
+
+.sidebar-action.primary {
+  border-color: #55d6be;
+  color: #061016;
+  background: #55d6be;
+}
+
+.sidebar-action.danger {
+  color: #ffd7df;
+  border-color: rgba(230, 109, 146, 0.45);
+}
+
 .icon-button {
   display: grid;
   place-items: center;
@@ -140,13 +209,13 @@ button:disabled {
 .roots {
   display: grid;
   gap: 6px;
-  min-height: 52px;
+  min-height: 48px;
   max-height: 118px;
   overflow: auto;
-  padding: 10px;
-  border: 1px solid #223047;
+  padding: 0;
+  border: 0;
   border-radius: 8px;
-  background: #0d141d;
+  background: transparent;
 }
 
 .roots div,
@@ -160,6 +229,10 @@ button:disabled {
 }
 
 .roots div {
+  padding: 9px 10px;
+  border: 1px solid #223047;
+  border-radius: 8px;
+  background: #0d141d;
   color: #b9c6d8;
   font-size: 12px;
 }
@@ -797,6 +870,37 @@ button:disabled {
   min-height: 0;
 }
 
+.resizable-content-grid {
+  gap: 0;
+}
+
+.resize-handle {
+  display: grid;
+  place-items: center;
+  min-width: 10px;
+  cursor: col-resize;
+}
+
+.resize-handle::after {
+  content: "";
+  width: 2px;
+  height: 100%;
+  border-radius: 999px;
+  background: #26374c;
+  transition: background 120ms ease, width 120ms ease;
+}
+
+.resize-handle:hover::after,
+.resizing-panes .resize-handle::after {
+  width: 4px;
+  background: #55d6be;
+}
+
+.resizing-panes {
+  cursor: col-resize;
+  user-select: none;
+}
+
 .tree-panel,
 .table-panel {
   grid-template-rows: auto minmax(0, 1fr);
@@ -809,7 +913,7 @@ button:disabled {
 
 .tree-row {
   display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) auto;
+  grid-template-columns: 18px 18px minmax(0, 1fr) auto;
   align-items: center;
   gap: 6px;
   width: 100%;
@@ -838,11 +942,33 @@ button:disabled {
   color: #91a0b5;
 }
 
+.tree-icon {
+  display: grid;
+  place-items: center;
+  color: #55d6be;
+}
+
 .tree-name {
   overflow: hidden;
   font-size: 13px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.file-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-cell svg {
+  flex: 0 0 auto;
+  color: #68a8ff;
 }
 
 .tree-size {
