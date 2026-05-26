@@ -3,6 +3,7 @@ import type { DuplicateOptions, ElectronApi, ExportFormat, ScanOptions, ScanProg
 
 const api: ElectronApi = {
   chooseFolders: () => ipcRenderer.invoke("dialog:chooseFolders"),
+  listDrives: () => ipcRenderer.invoke("system:listDrives"),
   startScan: (options: ScanOptions) => ipcRenderer.invoke("scan:start", options),
   cancelScan: () => ipcRenderer.invoke("scan:cancel"),
   exportScan: (payload: { result: ScanResult; format: ExportFormat }) => ipcRenderer.invoke("scan:export", payload),

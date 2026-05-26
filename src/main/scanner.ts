@@ -4,6 +4,8 @@ import path from "node:path";
 import type { ScanError, ScanNode, ScanOptions, ScanProgress, ScanResult } from "../shared/types";
 import { compilePatterns, shouldExclude, shouldInclude } from "./patterns";
 
+const PARTIAL_NODE_LIMIT = 20_000;
+
 export interface ScanHooks {
   onProgress?: (progress: ScanProgress) => void;
 }
@@ -128,6 +130,32 @@ export async function scanFolders(options: ScanOptions, hooks: ScanHooks = {}): 
   let nextId = 0;
   let cursor = 0;
   let lastReportAt = 0;
+  let lastSnapshotAt = 0;
+
+  function partialResult(): ScanResult {
+    const durationMs = performance.now() - startedAt;
+    const visibleNodes = nodes.length > PARTIAL_NODE_LIMIT ? nodes.slice(0, PARTIAL_NODE_LIMIT) : nodes;
+    return {
+      schemaVersion: 1,
+      scannedAt: new Date().toISOString(),
+      roots: normalized.roots,
+      options: normalized,
+      rootIds: [...rootIds],
+      nodes: visibleNodes.map((node) => ({
+        ...node,
+        children: node.children.filter((childId) => childId < visibleNodes.length)
+      })),
+      totals: {
+        bytes: rootIds.reduce((total, id) => total + (nodes[id]?.size ?? 0), 0),
+        allocatedBytes: rootIds.reduce((total, id) => total + (nodes[id]?.allocatedSize ?? 0), 0),
+        files: counters.scannedFiles,
+        folders: counters.scannedFolders,
+        errors: counters.errors,
+        durationMs
+      },
+      errors: [...errors]
+    };
+  }
 
   function addNode(node: Omit<Parameters<typeof buildNode>[0], "id">): ScanNode {
     const created = buildNode({ ...node, id: nextId });
@@ -139,18 +167,35 @@ export async function scanFolders(options: ScanOptions, hooks: ScanHooks = {}): 
     return created;
   }
 
+  function bumpAncestors(parentId: number | null, values: { size?: number; allocatedSize?: number; files?: number; folders?: number }): void {
+    let currentId = parentId;
+    while (currentId !== null) {
+      const node = nodes[currentId];
+      if (!node) break;
+      node.size += values.size ?? 0;
+      node.allocatedSize += values.allocatedSize ?? 0;
+      node.fileCount += values.files ?? 0;
+      node.folderCount += values.folders ?? 0;
+      currentId = node.parentId;
+    }
+  }
+
   function report(currentPath: string, phase: ScanProgress["phase"] = "scanning", force = false): void {
     if (!hooks.onProgress) return;
     if (!force && !shouldReport(lastReportAt)) return;
 
     lastReportAt = Date.now();
+    const includeSnapshot = nodes.length > 0 && (force || Date.now() - lastSnapshotAt > 1000);
+    if (includeSnapshot) lastSnapshotAt = Date.now();
+
     hooks.onProgress({
       phase,
       currentPath,
       scannedFiles: counters.scannedFiles,
       scannedFolders: counters.scannedFolders,
       scannedBytes: counters.scannedBytes,
-      errors: counters.errors
+      errors: counters.errors,
+      partialResult: includeSnapshot ? partialResult() : undefined
     });
   }
 
@@ -170,6 +215,7 @@ export async function scanFolders(options: ScanOptions, hooks: ScanHooks = {}): 
       stats
     });
     counters.scannedFolders += 1;
+    bumpAncestors(parentId, { folders: 1 });
     queue.push({ id: node.id, path: fullPath, depth });
     if (parentId === null) rootIds.push(node.id);
   }
@@ -197,6 +243,7 @@ export async function scanFolders(options: ScanOptions, hooks: ScanHooks = {}): 
     });
     counters.scannedFiles += 1;
     counters.scannedBytes += Number(stats.size);
+    bumpAncestors(parentId, { size: Number(stats.size), allocatedSize: Number(stats.size), files: 1 });
   }
 
   async function processEntry(parent: DirectoryJob, entryName: string, entryIsDirectory: boolean, entryIsSymlink: boolean): Promise<void> {
@@ -225,6 +272,7 @@ export async function scanFolders(options: ScanOptions, hooks: ScanHooks = {}): 
         if (!seenDirectories.has(key)) {
           seenDirectories.add(key);
           counters.scannedFolders += 1;
+          bumpAncestors(parent.id, { folders: 1 });
           queue.push({ id: node.id, path: fullPath, depth });
         }
       } else if (stats.isFile() || stats.isSymbolicLink() || (!entryIsDirectory && !stats.isDirectory())) {
@@ -241,6 +289,7 @@ export async function scanFolders(options: ScanOptions, hooks: ScanHooks = {}): 
         });
         counters.scannedFiles += 1;
         counters.scannedBytes += size;
+        bumpAncestors(parent.id, { size, allocatedSize: size, files: 1 });
       }
     } catch (error) {
       pushError(errors, counters, fullPath, error);

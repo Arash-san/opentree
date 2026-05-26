@@ -2,6 +2,7 @@ import {
   AlertTriangle,
   BarChart3,
   Binary,
+  Boxes,
   CheckCircle2,
   ChevronDown,
   ChevronRight,
@@ -11,10 +12,12 @@ import {
   FileJson,
   FileSpreadsheet,
   FileText,
+  Files,
   FolderOpen,
   GitCompare,
   HardDrive,
   History,
+  LayoutDashboard,
   ListFilter,
   Loader2,
   PieChart as PieChartIcon,
@@ -23,7 +26,8 @@ import {
   Search,
   Settings2,
   Sparkles,
-  TableProperties
+  TableProperties,
+  Zap
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -43,6 +47,7 @@ import type {
   AgeBucket,
   CompareResult,
   DuplicateGroup,
+  DriveInfo,
   ElectronApi,
   ExportFormat,
   ScanNode,
@@ -52,6 +57,7 @@ import type {
 } from "../../shared/types";
 
 type ChartMode = "treemap" | "extensions" | "age";
+type AppTab = "overview" | "files" | "duplicates" | "compare" | "exports";
 
 const CHART_COLORS = ["#55d6be", "#68a8ff", "#f3b44e", "#e66d92", "#8f7aff", "#a3e635", "#fb7185"];
 
@@ -216,6 +222,10 @@ function demoScanResult(root = "C:\\Sample\\Workspace"): ScanResult {
 
 const fallbackApi: ElectronApi = {
   chooseFolders: async () => ["C:\\Sample\\Workspace"],
+  listDrives: async () => [
+    { path: "C:\\", name: "C: Drive" },
+    { path: "D:\\", name: "D: Drive" }
+  ],
   startScan: async (options) => demoScanResult(options.roots[0]),
   cancelScan: async () => undefined,
   exportScan: async () => null,
@@ -619,6 +629,174 @@ function ComparePanel({ compare }: { compare: CompareResult | null }) {
   );
 }
 
+function ScanStatusPanel({ progress, scanning, result }: { progress: ScanProgress | null; scanning: boolean; result: ScanResult | null }) {
+  return (
+    <section className="side-panel live-panel">
+      <div className="panel-head">
+        <div>
+          <h2>{scanning ? "Scanning" : "Scan Status"}</h2>
+          <span>{progress?.phase ?? "Ready"}</span>
+        </div>
+        {scanning ? <Loader2 className="spin" size={17} /> : <CheckCircle2 size={17} />}
+      </div>
+      <div className="live-body">
+        <Metric label="Indexed" value={(progress?.scannedFiles ?? result?.totals.files ?? 0).toLocaleString()} tone="green" />
+        <Metric label="Folders" value={(progress?.scannedFolders ?? result?.totals.folders ?? 0).toLocaleString()} tone="amber" />
+        <Metric label="Bytes" value={formatBytes(progress?.scannedBytes ?? result?.totals.bytes ?? 0)} tone="cyan" />
+        <div className="current-path">
+          <span>Current</span>
+          <strong>{progress?.currentPath ?? result?.roots[0] ?? "No active scan"}</strong>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function SelectionPanel({
+  drives,
+  scanning,
+  progress,
+  onPickFolders,
+  onScanRoot,
+  onLoadIndex
+}: {
+  drives: DriveInfo[];
+  scanning: boolean;
+  progress: ScanProgress | null;
+  onPickFolders: () => void;
+  onScanRoot: (root: string) => void;
+  onLoadIndex: () => void;
+}) {
+  return (
+    <section className="selection-stage">
+      <div className="selection-hero">
+        <div className="hero-copy">
+          <div className="eyebrow">
+            <Zap size={15} />
+            Fast local indexing
+          </div>
+          <h2>Choose a folder or drive to begin.</h2>
+          <p>OpenTree starts scanning immediately and streams indexed items into the workspace while the scan is still running.</p>
+          <div className="hero-actions">
+            <button className="primary-action" type="button" onClick={onPickFolders} disabled={scanning}>
+              <FolderOpen size={18} />
+              Choose folder
+            </button>
+            <button className="secondary-action" type="button" onClick={onLoadIndex} disabled={scanning}>
+              <FileArchive size={18} />
+              Load index
+            </button>
+          </div>
+        </div>
+        <div className="drive-picker">
+          <div className="panel-head compact">
+            <div>
+              <h2>Drives</h2>
+              <span>{drives.length} available</span>
+            </div>
+            <HardDrive size={17} />
+          </div>
+          <div className="drive-grid">
+            {drives.map((drive) => (
+              <button key={drive.path} className="drive-card" type="button" onClick={() => onScanRoot(drive.path)} disabled={scanning}>
+                <HardDrive size={20} />
+                <strong>{drive.name}</strong>
+                <span>{drive.path}</span>
+              </button>
+            ))}
+            {drives.length === 0 && <div className="empty-state small">No drives found</div>}
+          </div>
+        </div>
+      </div>
+      {scanning && <ProgressBar progress={progress} />}
+    </section>
+  );
+}
+
+function TabBar({ activeTab, onChange }: { activeTab: AppTab; onChange: (tab: AppTab) => void }) {
+  const tabs: Array<{ id: AppTab; label: string; icon: React.ReactNode }> = [
+    { id: "overview", label: "Overview", icon: <LayoutDashboard size={16} /> },
+    { id: "files", label: "Files", icon: <Files size={16} /> },
+    { id: "duplicates", label: "Duplicates", icon: <Boxes size={16} /> },
+    { id: "compare", label: "Compare", icon: <GitCompare size={16} /> },
+    { id: "exports", label: "Exports", icon: <Download size={16} /> }
+  ];
+
+  return (
+    <nav className="tabbar" aria-label="OpenTree sections">
+      {tabs.map((tab) => (
+        <button key={tab.id} className={activeTab === tab.id ? "active" : ""} type="button" onClick={() => onChange(tab.id)}>
+          {tab.icon}
+          {tab.label}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+function ExportPanel({
+  result,
+  onSaveIndex,
+  onExport,
+  onCheckUpdates,
+  update
+}: {
+  result: ScanResult | null;
+  onSaveIndex: () => void;
+  onExport: (format: ExportFormat) => void;
+  onCheckUpdates: () => void;
+  update: UpdateStatus;
+}) {
+  return (
+    <section className="single-panel">
+      <div className="panel-head">
+        <div>
+          <h2>Exports</h2>
+          <span>{result ? "Reports and saved indexes" : "Run a scan first"}</span>
+        </div>
+        <Download size={18} />
+      </div>
+      <div className="export-cards">
+        <button type="button" onClick={onSaveIndex} disabled={!result}>
+          <Save size={22} />
+          <strong>Save index</strong>
+          <span>Store a scan for later comparison.</span>
+        </button>
+        <button type="button" onClick={() => onExport("json")} disabled={!result}>
+          <FileJson size={22} />
+          <strong>JSON</strong>
+          <span>Raw structured scan data.</span>
+        </button>
+        <button type="button" onClick={() => onExport("csv")} disabled={!result}>
+          <TableProperties size={22} />
+          <strong>CSV</strong>
+          <span>Rows for analysis tools.</span>
+        </button>
+        <button type="button" onClick={() => onExport("xlsx")} disabled={!result}>
+          <FileSpreadsheet size={22} />
+          <strong>XLSX</strong>
+          <span>Spreadsheet workbook.</span>
+        </button>
+        <button type="button" onClick={() => onExport("html")} disabled={!result}>
+          <FileText size={22} />
+          <strong>HTML</strong>
+          <span>Standalone report.</span>
+        </button>
+        <button type="button" onClick={() => onExport("pdf")} disabled={!result}>
+          <Download size={22} />
+          <strong>PDF</strong>
+          <span>Printable summary.</span>
+        </button>
+        <button type="button" onClick={onCheckUpdates}>
+          <RefreshCw size={22} />
+          <strong>Updates</strong>
+          <span>{update.message ?? update.state}</span>
+        </button>
+      </div>
+    </section>
+  );
+}
+
 export function App() {
   const api = openTreeApi();
   const [roots, setRoots] = useState<string[]>([]);
@@ -628,12 +806,14 @@ export function App() {
   const [followSymlinks, setFollowSymlinks] = useState(false);
   const [concurrency, setConcurrency] = useState("16");
   const [search, setSearch] = useState("");
+  const [drives, setDrives] = useState<DriveInfo[]>([]);
   const [result, setResult] = useState<ScanResult | null>(null);
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [scanning, setScanning] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [chartMode, setChartMode] = useState<ChartMode>("treemap");
+  const [activeTab, setActiveTab] = useState<AppTab>("overview");
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [compare, setCompare] = useState<CompareResult | null>(null);
@@ -641,31 +821,50 @@ export function App() {
   const byId = useNodeMap(result);
   const selected = selectedId === null ? null : byId.get(selectedId);
 
-  useEffect(() => api.onScanProgress(setProgress), [api]);
+  useEffect(
+    () =>
+      api.onScanProgress((next) => {
+        setProgress(next);
+        if (next.partialResult) {
+          setResult(next.partialResult);
+        }
+      }),
+    [api]
+  );
   useEffect(() => api.onUpdateStatus(setUpdate), [api]);
 
   useEffect(() => {
+    void api.listDrives().then(setDrives).catch(() => setDrives([]));
+  }, [api]);
+
+  useEffect(() => {
     if (!result) return;
-    setSelectedId(result.rootIds[0] ?? null);
-    setExpanded(new Set(result.rootIds));
+    setSelectedId((current) =>
+      current !== null && result.nodes.some((node) => node.id === current) ? current : result.rootIds[0] ?? null
+    );
+    setExpanded((previous) => {
+      const next = new Set(previous);
+      for (const rootId of result.rootIds) next.add(rootId);
+      return next;
+    });
   }, [result]);
 
   async function chooseFolders() {
     const picked = await api.chooseFolders();
-    if (picked.length > 0) setRoots(picked);
+    if (picked.length > 0) await startScanForRoots(picked);
   }
 
-  async function runScan() {
-    let scanRoots = roots;
-    if (scanRoots.length === 0) {
-      scanRoots = await api.chooseFolders();
-      setRoots(scanRoots);
-    }
+  async function startScanForRoots(scanRoots: string[]) {
     if (scanRoots.length === 0) return;
 
+    setRoots(scanRoots);
     setScanning(true);
+    setResult(null);
+    setSelectedId(null);
+    setExpanded(new Set());
     setDuplicates([]);
     setCompare(null);
+    setActiveTab("overview");
     try {
       const scan = await api.startScan({
         roots: scanRoots,
@@ -681,6 +880,14 @@ export function App() {
     }
   }
 
+  async function runScan() {
+    if (roots.length === 0) {
+      await chooseFolders();
+      return;
+    }
+    await startScanForRoots(roots);
+  }
+
   async function cancelScan() {
     await api.cancelScan();
     setScanning(false);
@@ -688,7 +895,12 @@ export function App() {
 
   async function loadIndex() {
     const loaded = await api.loadIndex();
-    if (loaded) setResult(loaded);
+    if (loaded) {
+      setRoots(loaded.roots);
+      setResult(loaded);
+      setScanning(false);
+      setActiveTab("overview");
+    }
   }
 
   async function compareWithIndex() {
@@ -740,8 +952,8 @@ export function App() {
         </div>
 
         <div className="toolbar">
-          <IconButton title="Choose folders" icon={<FolderOpen size={17} />} onClick={chooseFolders} variant="primary" />
-          <IconButton title="Start scan" icon={scanning ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />} onClick={runScan} disabled={scanning} />
+          <IconButton title="Choose and scan" icon={<FolderOpen size={17} />} onClick={chooseFolders} variant="primary" disabled={scanning} />
+          <IconButton title="Rescan" icon={scanning ? <Loader2 className="spin" size={17} /> : <RefreshCw size={17} />} onClick={runScan} disabled={scanning} />
           <IconButton title="Stop scan" icon={<CircleStop size={17} />} onClick={cancelScan} disabled={!scanning} variant="danger" />
         </div>
 
@@ -763,18 +975,8 @@ export function App() {
         <Toggle checked={followSymlinks} onChange={setFollowSymlinks} label="Follow links" />
 
         <div className="action-grid">
-          <IconButton title="Save index" icon={<Save size={16} />} onClick={() => result && void api.saveIndex(result)} disabled={!result} />
           <IconButton title="Load index" icon={<FileArchive size={16} />} onClick={loadIndex} />
-          <IconButton title="Compare index" icon={<GitCompare size={16} />} onClick={compareWithIndex} disabled={!result} />
           <IconButton title="Check updates" icon={<Download size={16} />} onClick={() => void api.checkForUpdates()} />
-        </div>
-
-        <div className="export-row">
-          <IconButton title="Export JSON" icon={<FileJson size={16} />} onClick={() => exportAs("json")} disabled={!result} />
-          <IconButton title="Export CSV" icon={<TableProperties size={16} />} onClick={() => exportAs("csv")} disabled={!result} />
-          <IconButton title="Export XLSX" icon={<FileSpreadsheet size={16} />} onClick={() => exportAs("xlsx")} disabled={!result} />
-          <IconButton title="Export HTML" icon={<FileText size={16} />} onClick={() => exportAs("html")} disabled={!result} />
-          <IconButton title="Export PDF" icon={<Download size={16} />} onClick={() => exportAs("pdf")} disabled={!result} />
         </div>
 
         {update.state === "downloaded" && (
@@ -805,36 +1007,112 @@ export function App() {
           </div>
         </header>
 
-        <div className="workspace">
-          <div className="visual-grid">
-            <ChartPanel result={result} mode={chartMode} setMode={setChartMode} />
-            <DuplicatePanel groups={duplicates} loading={duplicatesLoading} onRun={runDuplicates} />
-            <ComparePanel compare={compare} />
-          </div>
+        <div className={`workspace ${!result ? "selection-workspace" : ""}`}>
+          {!result ? (
+            <SelectionPanel
+              drives={drives}
+              scanning={scanning}
+              progress={progress}
+              onPickFolders={chooseFolders}
+              onScanRoot={(root) => void startScanForRoots([root])}
+              onLoadIndex={loadIndex}
+            />
+          ) : (
+            <>
+              <TabBar activeTab={activeTab} onChange={setActiveTab} />
+              <div className="tab-content">
+                {activeTab === "overview" && (
+                  <div className="overview-grid">
+                    <ChartPanel result={result} mode={chartMode} setMode={setChartMode} />
+                    <ScanStatusPanel progress={progress} scanning={scanning} result={result} />
+                    <section className="tree-panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>{selected?.name ?? "Folders"}</h2>
+                          <span>{selected ? formatBytes(selected.size) : "No selection"}</span>
+                        </div>
+                      </div>
+                      <TreeRows
+                        result={result}
+                        selectedId={selectedId}
+                        expanded={expanded}
+                        search={search}
+                        onSelect={setSelectedId}
+                        onToggle={toggleExpanded}
+                      />
+                    </section>
+                  </div>
+                )}
 
-          <div className="content-grid">
-            <section className="tree-panel">
-              <div className="panel-head">
-                <div>
-                  <h2>{selected?.name ?? "Folders"}</h2>
-                  <span>{selected ? formatBytes(selected.size) : "No selection"}</span>
-                </div>
+                {activeTab === "files" && (
+                  <div className="content-grid">
+                    <section className="tree-panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>{selected?.name ?? "Folders"}</h2>
+                          <span>{selected ? formatBytes(selected.size) : "No selection"}</span>
+                        </div>
+                      </div>
+                      <TreeRows
+                        result={result}
+                        selectedId={selectedId}
+                        expanded={expanded}
+                        search={search}
+                        onSelect={setSelectedId}
+                        onToggle={toggleExpanded}
+                      />
+                    </section>
+                    <DetailsTable result={result} selectedId={selectedId} search={search} />
+                  </div>
+                )}
+
+                {activeTab === "duplicates" && (
+                  <div className="tab-single">
+                    <DuplicatePanel groups={duplicates} loading={duplicatesLoading} onRun={runDuplicates} />
+                  </div>
+                )}
+
+                {activeTab === "compare" && (
+                  <div className="tab-single">
+                    <section className="single-panel">
+                      <div className="panel-head">
+                        <div>
+                          <h2>Compare</h2>
+                          <span>{compare ? formatBytes(Math.abs(compare.totalDelta)) : "Choose a saved index"}</span>
+                        </div>
+                        <IconButton title="Compare index" icon={<GitCompare size={16} />} onClick={compareWithIndex} disabled={!result} />
+                      </div>
+                      <div className="compare-list roomy">
+                        {compare?.entries.map((entry) => (
+                          <div className={`compare-entry ${entry.delta >= 0 ? "gain" : "loss"}`} key={`${entry.status}:${entry.path}`}>
+                            <span>{entry.status}</span>
+                            <strong>
+                              {entry.delta >= 0 ? "+" : "-"}
+                              {formatBytes(Math.abs(entry.delta))}
+                            </strong>
+                            <small>{entry.path}</small>
+                          </div>
+                        ))}
+                        {!compare && <div className="empty-state small">No comparison loaded</div>}
+                      </div>
+                    </section>
+                  </div>
+                )}
+
+                {activeTab === "exports" && (
+                  <div className="tab-single">
+                    <ExportPanel
+                      result={result}
+                      onSaveIndex={() => result && void api.saveIndex(result)}
+                      onExport={(format) => void exportAs(format)}
+                      onCheckUpdates={() => void api.checkForUpdates()}
+                      update={update}
+                    />
+                  </div>
+                )}
               </div>
-              {result ? (
-                <TreeRows
-                  result={result}
-                  selectedId={selectedId}
-                  expanded={expanded}
-                  search={search}
-                  onSelect={setSelectedId}
-                  onToggle={toggleExpanded}
-                />
-              ) : (
-                <div className="empty-state">No scan loaded</div>
-              )}
-            </section>
-            <DetailsTable result={result} selectedId={selectedId} search={search} />
-          </div>
+            </>
+          )}
         </div>
       </main>
     </div>

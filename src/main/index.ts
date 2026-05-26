@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from "electron";
 import { autoUpdater } from "electron-updater";
-import { writeFile, readFile } from "node:fs/promises";
+import { access, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import type {
@@ -26,6 +26,27 @@ function workerPath(): string {
 
 function sendUpdate(status: UpdateStatus): void {
   mainWindow?.webContents.send("update:status", status);
+}
+
+async function listSystemDrives(): Promise<Array<{ path: string; name: string }>> {
+  if (process.platform !== "win32") {
+    return [{ path: "/", name: "System Root" }];
+  }
+
+  const letters = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
+  const checks = await Promise.all(
+    letters.map(async (letter) => {
+      const drivePath = `${letter}:\\`;
+      try {
+        await access(drivePath);
+        return { path: drivePath, name: `${letter}: Drive` };
+      } catch {
+        return null;
+      }
+    })
+  );
+
+  return checks.filter((drive): drive is { path: string; name: string } => drive !== null);
 }
 
 function createWindow(): void {
@@ -128,6 +149,8 @@ function registerIpc(): void {
     });
     return response.canceled ? [] : response.filePaths;
   });
+
+  ipcMain.handle("system:listDrives", async () => listSystemDrives());
 
   ipcMain.handle("scan:start", async (event, options: ScanOptions) => {
     if (activeScanWorker) {

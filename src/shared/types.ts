@@ -63,6 +63,12 @@ export interface ScanProgress {
   scannedFolders: number;
   scannedBytes: number;
   errors: number;
+  partialResult?: ScanResult;
+}
+
+export interface DriveInfo {
+  path: string;
+  name: string;
 }
 
 export interface ExtensionSummary {
@@ -133,6 +139,7 @@ export interface UpdateStatus {
 
 export interface ElectronApi {
   chooseFolders(): Promise<string[]>;
+  listDrives(): Promise<DriveInfo[]>;
   startScan(options: ScanOptions): Promise<ScanResult>;
   cancelScan(): Promise<void>;
   exportScan(payload: { result: ScanResult; format: ExportFormat }): Promise<string | null>;

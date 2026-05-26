@@ -54,6 +54,27 @@ describe("scanFolders", () => {
     expect(result.totals.bytes).toBe("included".length);
   });
 
+  it("emits partial indexes while scanning", async () => {
+    const root = await tempDir();
+    await mkdir(path.join(root, "live"));
+    await writeFile(path.join(root, "live", "ready.txt"), "visible");
+    const partials: number[] = [];
+
+    await scanFolders(
+      { roots: [root], concurrency: 2 },
+      {
+        onProgress: (progress) => {
+          if (progress.partialResult) {
+            partials.push(progress.partialResult.nodes.length);
+          }
+        }
+      }
+    );
+
+    expect(partials.length).toBeGreaterThan(0);
+    expect(Math.max(...partials)).toBeGreaterThan(0);
+  });
+
   it("honors maxDepth for deep trees", async () => {
     const root = await tempDir();
     await mkdir(path.join(root, "a", "b"), { recursive: true });
