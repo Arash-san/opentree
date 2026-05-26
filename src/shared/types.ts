@@ -145,9 +145,8 @@ export interface ElectronApi {
   exportScan(payload: { result: ScanResult; format: ExportFormat }): Promise<string | null>;
   saveIndex(result: ScanResult): Promise<string | null>;
   loadIndex(): Promise<ScanResult | null>;
-  compareWithIndex(current: ScanResult): Promise<CompareResult | null>;
+  compareWithIndex(): Promise<CompareResult | null>;
   findDuplicates(payload: {
-    result: ScanResult;
     options: DuplicateOptions;
   }): Promise<DuplicateGroup[]>;
   checkForUpdates(): Promise<void>;

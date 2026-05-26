@@ -925,6 +925,7 @@ export function App() {
   const [duplicates, setDuplicates] = useState<DuplicateGroup[]>([]);
   const [duplicatesLoading, setDuplicatesLoading] = useState(false);
   const [compare, setCompare] = useState<CompareResult | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
   const [update, setUpdate] = useState<UpdateStatus>({ state: "idle" });
   const byId = useNodeMap(result);
   const selected = selectedId === null ? null : byId.get(selectedId);
@@ -1032,8 +1033,13 @@ export function App() {
 
   async function compareWithIndex() {
     if (!result) return;
-    const diff = await api.compareWithIndex(result);
-    if (diff) setCompare(diff);
+    setCompareLoading(true);
+    try {
+      const diff = await api.compareWithIndex();
+      if (diff) setCompare(diff);
+    } finally {
+      setCompareLoading(false);
+    }
   }
 
   async function runDuplicates() {
@@ -1042,7 +1048,6 @@ export function App() {
     try {
       setDuplicates(
         await api.findDuplicates({
-          result,
           options: { hash: true, algorithm: "sha256", minSize: 1, concurrency: 4 }
         })
       );
@@ -1250,7 +1255,12 @@ export function App() {
                           <h2>Compare</h2>
                           <span>{compare ? formatBytes(Math.abs(compare.totalDelta)) : "Choose a saved index"}</span>
                         </div>
-                        <IconButton title="Compare index" icon={<GitCompare size={16} />} onClick={compareWithIndex} disabled={!result} />
+                        <IconButton
+                          title="Compare index"
+                          icon={compareLoading ? <Loader2 className="spin" size={16} /> : <GitCompare size={16} />}
+                          onClick={compareWithIndex}
+                          disabled={!result || compareLoading}
+                        />
                       </div>
                       <div className="compare-list roomy">
                         {compare?.entries.map((entry) => (

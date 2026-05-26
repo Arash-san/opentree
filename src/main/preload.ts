@@ -9,8 +9,8 @@ const api: ElectronApi = {
   exportScan: (payload: { result: ScanResult; format: ExportFormat }) => ipcRenderer.invoke("scan:export", payload),
   saveIndex: (result: ScanResult) => ipcRenderer.invoke("scan:saveIndex", result),
   loadIndex: () => ipcRenderer.invoke("scan:loadIndex"),
-  compareWithIndex: (current: ScanResult) => ipcRenderer.invoke("scan:compareWithIndex", current),
-  findDuplicates: (payload: { result: ScanResult; options: DuplicateOptions }) => ipcRenderer.invoke("scan:duplicates", payload),
+  compareWithIndex: () => ipcRenderer.invoke("scan:compareWithIndex"),
+  findDuplicates: (payload: { options: DuplicateOptions }) => ipcRenderer.invoke("scan:duplicates", payload),
   checkForUpdates: () => ipcRenderer.invoke("updates:check"),
   installUpdate: () => ipcRenderer.invoke("updates:install"),
   onScanProgress: (callback: (progress: ScanProgress) => void) => {

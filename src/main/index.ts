@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu } from "electron";
 import { autoUpdater } from "electron-updater";
 import { access, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
@@ -12,11 +12,11 @@ import type {
   ScanResult,
   UpdateStatus
 } from "../shared/types";
-import { compareScans } from "./compare";
 import { exportHtml, exportScan } from "./exporters";
 
 let mainWindow: BrowserWindow | null = null;
 let activeScanWorker: Worker | null = null;
+let latestScanResult: ScanResult | null = null;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -64,6 +64,8 @@ function createWindow(): void {
       sandbox: false
     }
   });
+  mainWindow.setMenu(null);
+  mainWindow.setMenuBarVisibility(false);
 
   if (isDev && process.env.VITE_DEV_SERVER_URL) {
     void mainWindow.loadURL(process.env.VITE_DEV_SERVER_URL);
@@ -94,7 +96,7 @@ function runWorker<T>(payload: object, expectedType: string, sender?: Electron.W
       if (message.type === expectedType) {
         settled = true;
         void worker.terminate();
-        resolve((message.result ?? message.groups) as T);
+        resolve((message.result ?? message.groups ?? message.compare) as T);
       }
     });
 
@@ -165,6 +167,7 @@ function registerIpc(): void {
 
       worker.on("message", (message) => {
         if (message.type === "progress") {
+          if (message.progress.partialResult) latestScanResult = message.progress.partialResult as ScanResult;
           event.sender.send("scan:progress", message.progress);
           return;
         }
@@ -172,6 +175,7 @@ function registerIpc(): void {
         if (message.type === "complete") {
           settled = true;
           activeScanWorker = null;
+          latestScanResult = message.result as ScanResult;
           void worker.terminate();
           resolve(message.result as ScanResult);
           return;
@@ -223,22 +227,28 @@ function registerIpc(): void {
     });
     if (response.canceled || !response.filePaths[0]) return null;
     const content = await readFile(response.filePaths[0], "utf8");
-    return JSON.parse(content) as ScanResult;
+    latestScanResult = JSON.parse(content) as ScanResult;
+    return latestScanResult;
   });
 
-  ipcMain.handle("scan:compareWithIndex", async (_event, current: ScanResult): Promise<CompareResult | null> => {
+  ipcMain.handle("scan:compareWithIndex", async (event): Promise<CompareResult | null> => {
+    if (!latestScanResult) return null;
     const response = await showOpenDialog({
       properties: ["openFile"],
       filters: [{ name: "OpenTree index", extensions: ["oftindex", "json"] }]
     });
     if (response.canceled || !response.filePaths[0]) return null;
-    const previous = JSON.parse(await readFile(response.filePaths[0], "utf8")) as ScanResult;
-    return compareScans(previous, current);
+    return runWorker<CompareResult>(
+      { type: "compare", previousPath: response.filePaths[0], current: latestScanResult },
+      "compare",
+      event.sender
+    );
   });
 
-  ipcMain.handle("scan:duplicates", async (event, payload: { result: ScanResult; options: DuplicateOptions }) => {
+  ipcMain.handle("scan:duplicates", async (event, payload: { options: DuplicateOptions }) => {
+    if (!latestScanResult) return [];
     return runWorker<DuplicateGroup[]>(
-      { type: "duplicates", result: payload.result, options: payload.options },
+      { type: "duplicates", result: latestScanResult, options: payload.options },
       "duplicates",
       event.sender
     );
@@ -280,6 +290,7 @@ function registerIpc(): void {
 }
 
 void app.whenReady().then(() => {
+  Menu.setApplicationMenu(null);
   configureUpdater();
   registerIpc();
   createWindow();
