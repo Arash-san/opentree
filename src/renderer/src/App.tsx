@@ -50,7 +50,7 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import { ageBuckets, extensionSummary, filesOnly, formatBytes, formatDuration, treemapData } from "../../shared/format";
+import { ageBuckets, extensionSummary, formatBytes, formatDuration, treemapData } from "../../shared/format";
 import type {
   AgeBucket,
   CompareResult,
@@ -63,6 +63,7 @@ import type {
   ScanResult,
   UpdateStatus
 } from "../../shared/types";
+import { visibleFilesForSelection } from "./fileView";
 
 type ChartMode = "treemap" | "extensions" | "age";
 type AppTab = "overview" | "files" | "duplicates" | "compare" | "exports";
@@ -611,7 +612,20 @@ function TreeRows(props: {
   }
 
   return (
-    <div className="tree-list" role="tree" tabIndex={0} onKeyDown={handleKeyDown} ref={virtual.scrollRef}>
+    <div
+      className="tree-list"
+      role="tree"
+      tabIndex={0}
+      onKeyDown={handleKeyDown}
+      onContextMenu={(event) => {
+        if ((event.target as HTMLElement).closest(".tree-row")) return;
+        const current = selectedNode() ?? visible[0];
+        if (!current) return;
+        event.preventDefault();
+        props.onContextMenu(current, event.screenX, event.screenY);
+      }}
+      ref={virtual.scrollRef}
+    >
       <div className="virtual-spacer" style={{ height: virtual.totalHeight }}>
         {visible.slice(virtual.start, virtual.end).map((node, offset) => {
         const hasChildren = node.children.length > 0;
@@ -741,29 +755,16 @@ function DetailsTable({
   result,
   selectedId,
   search,
-  onContextMenu
+  onContextMenu,
+  onSelect
 }: {
   result: ScanResult | null;
   selectedId: number | null;
   search: string;
   onContextMenu: (node: ScanNode, x: number, y: number) => void;
+  onSelect: (id: number) => void;
 }) {
-  const byId = useNodeMap(result);
-  const selected = selectedId === null ? null : byId.get(selectedId);
-  const files = useMemo(() => {
-    if (!result) return [];
-    const query = search.trim().toLowerCase();
-    const candidates = selected?.isDirectory
-      ? result.nodes.filter((node) => !node.isDirectory && node.path.toLowerCase().startsWith(selected.path.toLowerCase()))
-      : selected && !selected.isDirectory
-        ? [selected]
-        : filesOnly(result);
-
-    return candidates
-      .filter((node) => !query || node.name.toLowerCase().includes(query) || node.path.toLowerCase().includes(query))
-      .sort((left, right) => right.size - left.size)
-      .slice(0, 2000);
-  }, [result, search, selected]);
+  const files = useMemo(() => visibleFilesForSelection(result, selectedId, search), [result, search, selectedId]);
   const virtual = useVirtualWindow(files.length, FILE_ROW_HEIGHT);
 
   return (
@@ -782,12 +783,23 @@ function DetailsTable({
           <span>Modified</span>
           <span>Path</span>
         </div>
-        <div className="table-scroll" ref={virtual.scrollRef}>
+        <div
+          className="table-scroll"
+          ref={virtual.scrollRef}
+          onContextMenu={(event) => {
+            if ((event.target as HTMLElement).closest(".file-row")) return;
+            const current = files.find((file) => file.id === selectedId) ?? files[0];
+            if (!current) return;
+            event.preventDefault();
+            onContextMenu(current, event.screenX, event.screenY);
+          }}
+        >
           <div className="virtual-spacer file-spacer" style={{ height: virtual.totalHeight }}>
             {files.slice(virtual.start, virtual.end).map((file, offset) => (
               <div
-                className="file-row virtual-row"
+                className={`file-row virtual-row ${selectedId === file.id ? "selected" : ""}`}
                 key={file.id}
+                onClick={() => onSelect(file.id)}
                 onContextMenu={(event) => {
                   event.preventDefault();
                   onContextMenu(file, event.screenX, event.screenY);
@@ -1397,7 +1409,13 @@ export function App() {
                       aria-label="Resize folder and file panes"
                       onPointerDown={startPaneResize}
                     />
-                    <DetailsTable result={result} selectedId={deferredSelectedId} search={search} onContextMenu={openItemContextMenu} />
+                    <DetailsTable
+                      result={result}
+                      selectedId={deferredSelectedId}
+                      search={search}
+                      onContextMenu={openItemContextMenu}
+                      onSelect={setSelectedId}
+                    />
                   </div>
                 )}
 

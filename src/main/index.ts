@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, Menu, shell } from "electron";
 import { autoUpdater } from "electron-updater";
 import { spawn } from "node:child_process";
-import { access, mkdir, writeFile, readFile } from "node:fs/promises";
+import { access, stat, writeFile, readFile } from "node:fs/promises";
 import path from "node:path";
 import { Worker } from "node:worker_threads";
 import type {
@@ -15,187 +15,13 @@ import type {
   UpdateStatus
 } from "../shared/types";
 import { exportHtml, exportScan } from "./exporters";
+import { itemContextMenuEntries, type ItemContextMenuActionId, type ItemContextMenuIcon } from "./item-context-menu";
 
 let mainWindow: BrowserWindow | null = null;
 let activeScanWorker: Worker | null = null;
 let latestScanResult: ScanResult | null = null;
-let windowsContextMenuScriptPath: string | null = null;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
-
-const WINDOWS_CONTEXT_MENU_SCRIPT = String.raw`
-param(
-  [Parameter(Mandatory=$true)][string]$Path,
-  [int]$X = -1,
-  [int]$Y = -1,
-  [string]$Hwnd = "0"
-)
-
-Add-Type -Language CSharp -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class OpenTreeShellContextMenu
-{
-    [StructLayout(LayoutKind.Sequential)]
-    public struct POINT
-    {
-        public int X;
-        public int Y;
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    public struct CMINVOKECOMMANDINFOEX
-    {
-        public int cbSize;
-        public uint fMask;
-        public IntPtr hwnd;
-        public IntPtr lpVerb;
-        [MarshalAs(UnmanagedType.LPStr)] public string lpParameters;
-        [MarshalAs(UnmanagedType.LPStr)] public string lpDirectory;
-        public int nShow;
-        public uint dwHotKey;
-        public IntPtr hIcon;
-        [MarshalAs(UnmanagedType.LPStr)] public string lpTitle;
-        public IntPtr lpVerbW;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpParametersW;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpDirectoryW;
-        [MarshalAs(UnmanagedType.LPWStr)] public string lpTitleW;
-        public POINT ptInvoke;
-    }
-
-    [ComImport]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    [Guid("000214E6-0000-0000-C000-000000000046")]
-    public interface IShellFolder
-    {
-        void ParseDisplayName(IntPtr hwnd, IntPtr pbc, [MarshalAs(UnmanagedType.LPWStr)] string pszDisplayName, ref uint pchEaten, out IntPtr ppidl, ref uint pdwAttributes);
-        void EnumObjects(IntPtr hwnd, int grfFlags, out IntPtr ppenumIDList);
-        void BindToObject(IntPtr pidl, IntPtr pbc, ref Guid riid, out IntPtr ppv);
-        void BindToStorage(IntPtr pidl, IntPtr pbc, ref Guid riid, out IntPtr ppv);
-        [PreserveSig] int CompareIDs(IntPtr lParam, IntPtr pidl1, IntPtr pidl2);
-        void CreateViewObject(IntPtr hwndOwner, ref Guid riid, out IntPtr ppv);
-        void GetAttributesOf(uint cidl, IntPtr[] apidl, ref uint rgfInOut);
-        void GetUIObjectOf(IntPtr hwndOwner, uint cidl, [MarshalAs(UnmanagedType.LPArray, SizeParamIndex=1)] IntPtr[] apidl, ref Guid riid, IntPtr rgfReserved, out IntPtr ppv);
-        void GetDisplayNameOf(IntPtr pidl, uint uFlags, out IntPtr pName);
-        void SetNameOf(IntPtr hwnd, IntPtr pidl, [MarshalAs(UnmanagedType.LPWStr)] string pszName, uint uFlags, out IntPtr ppidlOut);
-    }
-
-    [ComImport]
-    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
-    [Guid("000214e4-0000-0000-c000-000000000046")]
-    public interface IContextMenu
-    {
-        [PreserveSig] int QueryContextMenu(IntPtr hmenu, uint indexMenu, uint idCmdFirst, uint idCmdLast, uint uFlags);
-        void InvokeCommand(ref CMINVOKECOMMANDINFOEX pici);
-        void GetCommandString(UIntPtr idcmd, uint uflags, IntPtr reserved, StringBuilder commandstring, int cch);
-    }
-
-    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
-    private static extern int SHParseDisplayName(string pszName, IntPtr pbc, out IntPtr ppidl, uint sfgaoIn, out uint psfgaoOut);
-
-    [DllImport("shell32.dll")]
-    private static extern int SHBindToParent(IntPtr pidl, ref Guid riid, out IShellFolder ppv, out IntPtr ppidlLast);
-
-    [DllImport("ole32.dll")]
-    private static extern void CoTaskMemFree(IntPtr pv);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr CreatePopupMenu();
-
-    [DllImport("user32.dll")]
-    private static extern bool DestroyMenu(IntPtr hMenu);
-
-    [DllImport("user32.dll")]
-    private static extern uint TrackPopupMenuEx(IntPtr hmenu, uint fuFlags, int x, int y, IntPtr hwnd, IntPtr lptpm);
-
-    [DllImport("user32.dll")]
-    private static extern bool GetCursorPos(out POINT lpPoint);
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    private const uint CMF_NORMAL = 0x00000000;
-    private const uint TPM_RIGHTBUTTON = 0x0002;
-    private const uint TPM_RETURNCMD = 0x0100;
-    private const uint CMIC_MASK_UNICODE = 0x00004000;
-    private const int SW_SHOWNORMAL = 1;
-
-    public static void Show(string itemPath, int x, int y, string hwndText)
-    {
-        IntPtr pidl;
-        uint attrs;
-        int hr = SHParseDisplayName(itemPath, IntPtr.Zero, out pidl, 0, out attrs);
-        if (hr != 0 || pidl == IntPtr.Zero) throw new COMException("SHParseDisplayName failed", hr);
-
-        try
-        {
-            Guid shellFolderGuid = new Guid("000214E6-0000-0000-C000-000000000046");
-            IShellFolder parent;
-            IntPtr childPidl;
-            hr = SHBindToParent(pidl, ref shellFolderGuid, out parent, out childPidl);
-            if (hr != 0) throw new COMException("SHBindToParent failed", hr);
-
-            Guid contextMenuGuid = new Guid("000214e4-0000-0000-c000-000000000046");
-            IntPtr contextMenuPtr;
-            parent.GetUIObjectOf(IntPtr.Zero, 1, new IntPtr[] { childPidl }, ref contextMenuGuid, IntPtr.Zero, out contextMenuPtr);
-
-            IContextMenu contextMenu = (IContextMenu)Marshal.GetObjectForIUnknown(contextMenuPtr);
-            try
-            {
-                IntPtr menu = CreatePopupMenu();
-                try
-                {
-                    contextMenu.QueryContextMenu(menu, 0, 1, 0x7FFF, CMF_NORMAL);
-                    if (x < 0 || y < 0)
-                    {
-                        POINT cursor;
-                        GetCursorPos(out cursor);
-                        x = cursor.X;
-                        y = cursor.Y;
-                    }
-
-                    IntPtr hwnd = IntPtr.Zero;
-                    long parsed;
-                    if (long.TryParse(hwndText, out parsed)) hwnd = new IntPtr(parsed);
-                    if (hwnd != IntPtr.Zero) SetForegroundWindow(hwnd);
-
-                    uint command = TrackPopupMenuEx(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, x, y, hwnd, IntPtr.Zero);
-                    if (command > 0)
-                    {
-                        CMINVOKECOMMANDINFOEX invoke = new CMINVOKECOMMANDINFOEX();
-                        invoke.cbSize = Marshal.SizeOf(typeof(CMINVOKECOMMANDINFOEX));
-                        invoke.fMask = CMIC_MASK_UNICODE;
-                        invoke.hwnd = hwnd;
-                        invoke.lpVerb = new IntPtr(command - 1);
-                        invoke.lpVerbW = new IntPtr(command - 1);
-                        invoke.nShow = SW_SHOWNORMAL;
-                        invoke.ptInvoke = new POINT { X = x, Y = y };
-                        contextMenu.InvokeCommand(ref invoke);
-                    }
-                }
-                finally
-                {
-                    DestroyMenu(menu);
-                }
-            }
-            finally
-            {
-                Marshal.ReleaseComObject(contextMenu);
-                Marshal.Release(contextMenuPtr);
-            }
-        }
-        finally
-        {
-            CoTaskMemFree(pidl);
-        }
-    }
-}
-"@
-
-[OpenTreeShellContextMenu]::Show($Path, $X, $Y, $Hwnd)
-`;
 
 function workerPath(): string {
   return path.join(__dirname, "scanner.worker.js");
@@ -321,78 +147,76 @@ async function showSaveDialog(options: Electron.SaveDialogOptions): Promise<Elec
   return dialog.showSaveDialog(options);
 }
 
-function nativeWindowHandleText(webContents?: Electron.WebContents): string {
-  const window = webContents ? BrowserWindow.fromWebContents(webContents) : mainWindow;
-  const handle = window?.getNativeWindowHandle();
-  if (!handle || handle.length === 0) return "0";
-  return handle.length >= 8 ? handle.readBigUInt64LE(0).toString() : String(handle.readUInt32LE(0));
+async function iconForPath(itemPath: string): Promise<Electron.NativeImage | undefined> {
+  try {
+    const icon = await app.getFileIcon(itemPath, { size: "small" });
+    return icon.isEmpty() ? undefined : icon;
+  } catch {
+    return undefined;
+  }
 }
 
-async function ensureWindowsContextMenuScript(): Promise<string> {
-  if (windowsContextMenuScriptPath) return windowsContextMenuScriptPath;
-  const directory = path.join(app.getPath("userData"), "native");
-  await mkdir(directory, { recursive: true });
-  windowsContextMenuScriptPath = path.join(directory, "windows-shell-context-menu.ps1");
-  await writeFile(windowsContextMenuScriptPath, WINDOWS_CONTEXT_MENU_SCRIPT, "utf8");
-  return windowsContextMenuScriptPath;
+function spawnDetached(command: string, args: string[], options: { hidden?: boolean } = {}): void {
+  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: options.hidden ?? true });
+  child.unref();
 }
 
-async function showNativeItemContextMenu(payload: ItemContextMenuRequest, webContents: Electron.WebContents): Promise<boolean> {
-  if (process.platform !== "win32") return false;
-  const scriptPath = await ensureWindowsContextMenuScript();
-  return new Promise((resolve, reject) => {
-    const child = spawn(
-      "powershell.exe",
-      [
-        "-NoProfile",
-        "-Sta",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        scriptPath,
-        "-Path",
-        payload.path,
-        "-X",
-        String(payload.x),
-        "-Y",
-        String(payload.y),
-        "-Hwnd",
-        nativeWindowHandleText(webContents)
-      ],
-      { stdio: ["ignore", "ignore", "pipe"], windowsHide: true }
-    );
-    let stderr = "";
-    child.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString("utf8");
-    });
-    child.on("error", reject);
-    child.on("exit", (code) => {
-      if (code === 0) {
-        resolve(true);
-        return;
-      }
-      reject(new Error(stderr.trim() || `Windows shell context menu exited with code ${code ?? "unknown"}`));
-    });
+function openTerminalAt(itemPath: string, isDirectory: boolean): void {
+  const targetPath = isDirectory ? itemPath : path.dirname(itemPath);
+  spawnDetached("powershell.exe", ["-NoExit", "-NoLogo", "-Command", "Set-Location -LiteralPath $args[0]", targetPath], {
+    hidden: false
   });
 }
 
-function showFallbackItemContextMenu(itemPath: string, webContents: Electron.WebContents): void {
+function showItemProperties(itemPath: string): void {
+  const script = [
+    "$shell = New-Object -ComObject Shell.Application",
+    "$item = Get-Item -LiteralPath $args[0]",
+    "$folderPath = if ($item.PSIsContainer) { $item.Parent.FullName } else { $item.DirectoryName }",
+    "$folder = $shell.Namespace($folderPath)",
+    "if ($folder) { $folderItem = $folder.ParseName($item.Name); if ($folderItem) { $folderItem.InvokeVerb('properties') } }"
+  ].join("; ");
+  spawnDetached("powershell.exe", ["-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass", "-Command", script, itemPath]);
+}
+
+function runItemContextAction(action: ItemContextMenuActionId, itemPath: string, isDirectory: boolean): void {
+  if (action === "open") {
+    void shell.openPath(itemPath);
+  } else if (action === "open-terminal") {
+    openTerminalAt(itemPath, isDirectory);
+  } else if (action === "show-in-folder") {
+    shell.showItemInFolder(itemPath);
+  } else if (action === "copy-path") {
+    clipboard.writeText(itemPath);
+  } else if (action === "copy-name") {
+    clipboard.writeText(path.basename(itemPath) || itemPath);
+  } else if (action === "trash") {
+    void shell.trashItem(itemPath);
+  } else if (action === "properties") {
+    showItemProperties(itemPath);
+  }
+}
+
+async function showFallbackItemContextMenu(itemPath: string, webContents: Electron.WebContents): Promise<void> {
   const window = BrowserWindow.fromWebContents(webContents) ?? mainWindow ?? undefined;
-  const menu = Menu.buildFromTemplate([
-    {
-      label: "Open",
-      click: () => void shell.openPath(itemPath)
-    },
-    {
-      label: "Show in folder",
-      click: () => shell.showItemInFolder(itemPath)
-    },
-    { type: "separator" },
-    {
-      label: "Copy path",
-      click: () => clipboard.writeText(itemPath)
-    }
-  ]);
+  const stats = await stat(itemPath);
+  const itemIcon = await iconForPath(itemPath);
+  const folderIcon = await iconForPath(stats.isDirectory() ? itemPath : path.dirname(itemPath));
+  const icons: Record<ItemContextMenuIcon, Electron.NativeImage | undefined> = {
+    item: itemIcon,
+    folder: folderIcon ?? itemIcon
+  };
+
+  const menu = Menu.buildFromTemplate(
+    itemContextMenuEntries(itemPath, { isDirectory: stats.isDirectory() }).map((entry) => {
+      if (entry.type === "separator") return { type: "separator" };
+      return {
+        label: entry.label,
+        icon: icons[entry.icon],
+        click: () => runItemContextAction(entry.id, itemPath, stats.isDirectory())
+      };
+    })
+  );
   menu.popup({ window });
 }
 
@@ -509,10 +333,15 @@ function registerIpc(): void {
   ipcMain.handle("shell:itemContextMenu", async (event, payload: ItemContextMenuRequest) => {
     if (!payload?.path) return;
     try {
-      const nativeMenuShown = await showNativeItemContextMenu(payload, event.sender);
-      if (!nativeMenuShown) showFallbackItemContextMenu(payload.path, event.sender);
+      await showFallbackItemContextMenu(payload.path, event.sender);
     } catch {
-      showFallbackItemContextMenu(payload.path, event.sender);
+      const window = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined;
+      Menu.buildFromTemplate([
+        {
+          label: "Copy path",
+          click: () => clipboard.writeText(payload.path)
+        }
+      ]).popup({ window });
     }
   });
 

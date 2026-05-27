@@ -1070,6 +1070,12 @@ button:disabled {
   background: #142031;
 }
 
+.file-row.selected {
+  color: #fff;
+  background: #142031;
+  box-shadow: inset 2px 0 0 #55d6be;
+}
+
 table {
   width: 100%;
   border-collapse: collapse;
