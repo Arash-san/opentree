@@ -15,11 +15,18 @@ import type {
   UpdateStatus
 } from "../shared/types";
 import { exportHtml, exportScan } from "./exporters";
-import { itemContextMenuEntries, type ItemContextMenuActionId, type ItemContextMenuIcon } from "./item-context-menu";
+import {
+  itemContextMenuEntries,
+  type ItemContextMenuActionId,
+  type ItemContextMenuIcon,
+  type ShellVerbMenuEntry
+} from "./item-context-menu";
 
 let mainWindow: BrowserWindow | null = null;
 let activeScanWorker: Worker | null = null;
 let latestScanResult: ScanResult | null = null;
+const shellVerbCache = new Map<string, ShellVerbMenuEntry[]>();
+let cachedWinRarPath: string | null | undefined;
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL);
 
@@ -156,14 +163,178 @@ async function iconForPath(itemPath: string): Promise<Electron.NativeImage | und
   }
 }
 
-function spawnDetached(command: string, args: string[], options: { hidden?: boolean } = {}): void {
-  const child = spawn(command, args, { detached: true, stdio: "ignore", windowsHide: options.hidden ?? true });
+async function firstAccessible(paths: string[]): Promise<string | null> {
+  for (const candidate of paths) {
+    if (!candidate) continue;
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next well-known install path.
+    }
+  }
+  return null;
+}
+
+async function winRarPath(): Promise<string | null> {
+  if (cachedWinRarPath !== undefined) return cachedWinRarPath;
+  cachedWinRarPath = await firstAccessible([
+    path.join(process.env.ProgramFiles ?? "C:\\Program Files", "WinRAR", "WinRAR.exe"),
+    path.join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "WinRAR", "WinRAR.exe")
+  ]);
+  return cachedWinRarPath;
+}
+
+async function toolIcon(icon: ItemContextMenuIcon): Promise<Electron.NativeImage | undefined> {
+  if (icon === "archive") {
+    const executable = await winRarPath();
+    return executable ? iconForPath(executable) : undefined;
+  }
+
+  if (icon === "terminal") {
+    return iconForPath(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"));
+  }
+
+  if (icon === "editor") {
+    const executable = await firstAccessible([
+      path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Notepad++", "notepad++.exe"),
+      path.join(process.env["ProgramFiles(x86)"] ?? "C:\\Program Files (x86)", "Notepad++", "notepad++.exe")
+    ]);
+    return executable ? iconForPath(executable) : undefined;
+  }
+
+  return undefined;
+}
+
+function spawnDetached(command: string, args: string[], options: { hidden?: boolean; cwd?: string } = {}): void {
+  const child = spawn(command, args, {
+    cwd: options.cwd,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: options.hidden ?? true
+  });
   child.unref();
+}
+
+function powerShellArgs(script: string, scriptArgs: string[], options: { noExit?: boolean } = {}): string[] {
+  const encodedArgs = Buffer.from(JSON.stringify(scriptArgs), "utf8").toString("base64");
+  const bootstrap = [
+    "$ProgressPreference = 'SilentlyContinue'",
+    `$OpenTreeArgsJson = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encodedArgs}'))`,
+    "$OpenTreeParsedArgs = ConvertFrom-Json -InputObject $OpenTreeArgsJson",
+    "$args = @($OpenTreeParsedArgs)",
+    script
+  ].join("; ");
+  const encodedCommand = Buffer.from(bootstrap, "utf16le").toString("base64");
+  const base = options.noExit ? ["-NoExit", "-NoLogo"] : ["-NoProfile"];
+  return [...base, "-Sta", "-ExecutionPolicy", "Bypass", "-EncodedCommand", encodedCommand];
+}
+
+function runPowerShell(script: string, args: string[], timeoutMs = 3000): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(
+      "powershell.exe",
+      powerShellArgs(script, args),
+      { stdio: ["ignore", "pipe", "pipe"], windowsHide: true }
+    );
+    let stdout = "";
+    let stderr = "";
+    const timeout = setTimeout(() => {
+      child.kill();
+      reject(new Error("PowerShell timed out"));
+    }, timeoutMs);
+
+    child.stdout?.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr?.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (error) => {
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timeout);
+      if (code === 0) {
+        resolve(stdout);
+        return;
+      }
+      reject(new Error(stderr.trim() || `PowerShell exited with code ${code ?? "unknown"}`));
+    });
+  });
+}
+
+function shellVerbCacheKey(itemPath: string, isDirectory: boolean): string {
+  if (isDirectory) return "directory";
+  return `file:${path.extname(itemPath).toLowerCase() || "(none)"}`;
+}
+
+async function shellVerbsForPath(itemPath: string, isDirectory: boolean): Promise<ShellVerbMenuEntry[]> {
+  if (process.platform !== "win32") return [];
+  const cacheKey = shellVerbCacheKey(itemPath, isDirectory);
+  const cached = shellVerbCache.get(cacheKey);
+  if (cached) return cached;
+
+  const script = String.raw`
+    $ErrorActionPreference = "Stop"
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $target = Get-Item -LiteralPath $args[0] -Force
+    $shell = New-Object -ComObject Shell.Application
+    $folderPath = if ($target.PSIsContainer) { $target.Parent.FullName } else { $target.DirectoryName }
+    $folder = $shell.Namespace($folderPath)
+    $folderItem = if ($folder) { $folder.ParseName($target.Name) } else { $null }
+    $items = @()
+    if ($folderItem) {
+      foreach ($verb in $folderItem.Verbs()) {
+        $name = [string]$verb.Name
+        if (-not [string]::IsNullOrWhiteSpace($name)) {
+          $items += [pscustomobject]@{ name = $name; label = $name }
+        }
+      }
+    }
+    @($items) | ConvertTo-Json -Compress
+  `;
+
+  try {
+    const output = (await runPowerShell(script, [itemPath])).trim();
+    if (!output) return [];
+    const parsed = JSON.parse(output) as ShellVerbMenuEntry[] | ShellVerbMenuEntry;
+    const verbs = Array.isArray(parsed) ? parsed : [parsed];
+    shellVerbCache.set(cacheKey, verbs);
+    return verbs;
+  } catch {
+    shellVerbCache.set(cacheKey, []);
+    return [];
+  }
+}
+
+function invokeShellVerb(itemPath: string, verbName: string): void {
+  const script = String.raw`
+    $ErrorActionPreference = "Stop"
+    $target = Get-Item -LiteralPath $args[0] -Force
+    $verbName = $args[1]
+    $shell = New-Object -ComObject Shell.Application
+    $folderPath = if ($target.PSIsContainer) { $target.Parent.FullName } else { $target.DirectoryName }
+    $folder = $shell.Namespace($folderPath)
+    if ($folder) {
+      $folderItem = $folder.ParseName($target.Name)
+      if ($folderItem) {
+        foreach ($verb in $folderItem.Verbs()) {
+          if ([string]$verb.Name -eq $verbName) {
+            $verb.DoIt()
+            break
+          }
+        }
+      }
+    }
+  `;
+  spawnDetached("powershell.exe", powerShellArgs(script, [itemPath, verbName]));
 }
 
 function openTerminalAt(itemPath: string, isDirectory: boolean): void {
   const targetPath = isDirectory ? itemPath : path.dirname(itemPath);
-  spawnDetached("powershell.exe", ["-NoExit", "-NoLogo", "-Command", "Set-Location -LiteralPath $args[0]", targetPath], {
+  spawnDetached("powershell.exe", powerShellArgs("Set-Location -LiteralPath $args[0]", [targetPath], { noExit: true }), {
     hidden: false
   });
 }
@@ -176,44 +347,97 @@ function showItemProperties(itemPath: string): void {
     "$folder = $shell.Namespace($folderPath)",
     "if ($folder) { $folderItem = $folder.ParseName($item.Name); if ($folderItem) { $folderItem.InvokeVerb('properties') } }"
   ].join("; ");
-  spawnDetached("powershell.exe", ["-NoProfile", "-Sta", "-ExecutionPolicy", "Bypass", "-Command", script, itemPath]);
+  spawnDetached("powershell.exe", powerShellArgs(script, [itemPath]));
 }
 
-function runItemContextAction(action: ItemContextMenuActionId, itemPath: string, isDirectory: boolean): void {
+function archiveOutputPath(itemPath: string, extension = ".rar"): string {
+  const parsed = path.parse(itemPath);
+  return path.join(parsed.dir, `${parsed.base}${extension}`);
+}
+
+function archiveExtractFolder(itemPath: string): string {
+  const parsed = path.parse(itemPath);
+  return path.join(parsed.dir, parsed.name);
+}
+
+async function runWinRarAction(action: ItemContextMenuActionId, itemPaths: string[]): Promise<void> {
+  const executable = await winRarPath();
+  const first = itemPaths[0];
+  if (!executable || !first) return;
+
+  if (action === "winrar-open") {
+    spawnDetached(executable, [first], { hidden: false });
+  } else if (action === "winrar-extract-files") {
+    spawnDetached(executable, ["x", first], { cwd: path.dirname(first), hidden: false });
+  } else if (action === "winrar-extract-here") {
+    spawnDetached(executable, ["x", first, `${path.dirname(first)}\\`], { hidden: false });
+  } else if (action === "winrar-extract-folder") {
+    spawnDetached(executable, ["x", first, `${archiveExtractFolder(first)}\\`], { hidden: false });
+  } else if (action === "winrar-add-archive") {
+    spawnDetached(executable, ["a", archiveOutputPath(first), ...itemPaths], { cwd: path.dirname(first), hidden: false });
+  } else if (action === "winrar-add-named") {
+    spawnDetached(executable, ["a", archiveOutputPath(first), ...itemPaths], { cwd: path.dirname(first), hidden: false });
+  }
+}
+
+function runItemContextAction(action: ItemContextMenuActionId, itemPaths: string[], isDirectory: boolean): void {
+  const itemPath = itemPaths[0];
+  if (!itemPath) return;
+
   if (action === "open") {
-    void shell.openPath(itemPath);
+    for (const selectedPath of itemPaths.slice(0, 10)) void shell.openPath(selectedPath);
   } else if (action === "open-terminal") {
     openTerminalAt(itemPath, isDirectory);
   } else if (action === "show-in-folder") {
     shell.showItemInFolder(itemPath);
   } else if (action === "copy-path") {
-    clipboard.writeText(itemPath);
+    clipboard.writeText(itemPaths.join("\n"));
   } else if (action === "copy-name") {
     clipboard.writeText(path.basename(itemPath) || itemPath);
   } else if (action === "trash") {
-    void shell.trashItem(itemPath);
+    for (const selectedPath of itemPaths) void shell.trashItem(selectedPath);
   } else if (action === "properties") {
     showItemProperties(itemPath);
+  } else {
+    void runWinRarAction(action, itemPaths);
   }
 }
 
-async function showFallbackItemContextMenu(itemPath: string, webContents: Electron.WebContents): Promise<void> {
+async function showItemContextMenu(payload: ItemContextMenuRequest, webContents: Electron.WebContents): Promise<void> {
   const window = BrowserWindow.fromWebContents(webContents) ?? mainWindow ?? undefined;
+  const itemPaths = (payload.paths?.length ? payload.paths : [payload.path]).filter(Boolean);
+  const itemPath = itemPaths[0];
+  if (!itemPath) return;
+
   const stats = await stat(itemPath);
-  const itemIcon = await iconForPath(itemPath);
-  const folderIcon = await iconForPath(stats.isDirectory() ? itemPath : path.dirname(itemPath));
+  const isDirectory = stats.isDirectory();
+  const shellVerbs = itemPaths.length === 1 ? await shellVerbsForPath(itemPath, isDirectory) : [];
+  const hasWinRar = Boolean(await winRarPath());
+  const itemIcon = itemPaths.length === 1 ? await iconForPath(itemPath) : undefined;
+  const folderIcon = await iconForPath(isDirectory ? itemPath : path.dirname(itemPath));
   const icons: Record<ItemContextMenuIcon, Electron.NativeImage | undefined> = {
     item: itemIcon,
-    folder: folderIcon ?? itemIcon
+    folder: folderIcon ?? itemIcon,
+    terminal: await toolIcon("terminal"),
+    archive: await toolIcon("archive"),
+    editor: await toolIcon("editor"),
+    tool: undefined
   };
 
   const menu = Menu.buildFromTemplate(
-    itemContextMenuEntries(itemPath, { isDirectory: stats.isDirectory() }).map((entry) => {
+    itemContextMenuEntries(itemPaths, { isDirectory, shellVerbs, hasWinRar }).map((entry) => {
       if (entry.type === "separator") return { type: "separator" };
+      if (entry.type === "shell-verb") {
+        return {
+          label: entry.label,
+          icon: entry.icon ? icons[entry.icon] : undefined,
+          click: () => invokeShellVerb(itemPath, entry.verb)
+        };
+      }
       return {
         label: entry.label,
-        icon: icons[entry.icon],
-        click: () => runItemContextAction(entry.id, itemPath, stats.isDirectory())
+        icon: entry.icon ? icons[entry.icon] : undefined,
+        click: () => runItemContextAction(entry.id, itemPaths, isDirectory)
       };
     })
   );
@@ -333,7 +557,7 @@ function registerIpc(): void {
   ipcMain.handle("shell:itemContextMenu", async (event, payload: ItemContextMenuRequest) => {
     if (!payload?.path) return;
     try {
-      await showFallbackItemContextMenu(payload.path, event.sender);
+      await showItemContextMenu(payload, event.sender);
     } catch {
       const window = BrowserWindow.fromWebContents(event.sender) ?? mainWindow ?? undefined;
       Menu.buildFromTemplate([

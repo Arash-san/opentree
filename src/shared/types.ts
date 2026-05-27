@@ -139,6 +139,7 @@ export interface UpdateStatus {
 
 export interface ItemContextMenuRequest {
   path: string;
+  paths?: string[];
   x: number;
   y: number;
 }

@@ -37,7 +37,7 @@ import {
   TableProperties,
   Zap
 } from "lucide-react";
-import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import {
   Bar,
   BarChart,
@@ -63,6 +63,7 @@ import type {
   ScanResult,
   UpdateStatus
 } from "../../shared/types";
+import { nextFileSelection } from "./fileSelection";
 import { visibleFilesForSelection } from "./fileView";
 
 type ChartMode = "treemap" | "extensions" | "age";
@@ -754,18 +755,36 @@ function ChartPanel({ result, mode, setMode }: { result: ScanResult | null; mode
 function DetailsTable({
   result,
   selectedId,
+  selectedFileIds,
+  focusedFileId,
   search,
   onContextMenu,
-  onSelect
+  onSelectionChange
 }: {
   result: ScanResult | null;
   selectedId: number | null;
+  selectedFileIds: ReadonlySet<number>;
+  focusedFileId: number | null;
   search: string;
-  onContextMenu: (node: ScanNode, x: number, y: number) => void;
-  onSelect: (id: number) => void;
+  onContextMenu: (nodes: ScanNode[], x: number, y: number) => void;
+  onSelectionChange: (ids: Set<number>, focusedId: number | null) => void;
 }) {
   const files = useMemo(() => visibleFilesForSelection(result, selectedId, search), [result, search, selectedId]);
+  const visibleIds = useMemo(() => files.map((file) => file.id), [files]);
+  const selectedVisibleFiles = useMemo(() => files.filter((file) => selectedFileIds.has(file.id)), [files, selectedFileIds]);
   const virtual = useVirtualWindow(files.length, FILE_ROW_HEIGHT);
+
+  function selectFile(file: ScanNode, event: MouseEvent<HTMLDivElement>) {
+    const next = nextFileSelection({
+      visibleIds,
+      selectedIds: selectedFileIds,
+      focusedId: focusedFileId,
+      clickedId: file.id,
+      additive: event.ctrlKey || event.metaKey,
+      range: event.shiftKey
+    });
+    onSelectionChange(next.selectedIds, next.focusedId);
+  }
 
   return (
     <section className="table-panel">
@@ -788,8 +807,8 @@ function DetailsTable({
           ref={virtual.scrollRef}
           onContextMenu={(event) => {
             if ((event.target as HTMLElement).closest(".file-row")) return;
-            const current = files.find((file) => file.id === selectedId) ?? files[0];
-            if (!current) return;
+            const current = selectedVisibleFiles.length > 0 ? selectedVisibleFiles : files[0] ? [files[0]] : [];
+            if (current.length === 0) return;
             event.preventDefault();
             onContextMenu(current, event.screenX, event.screenY);
           }}
@@ -797,12 +816,16 @@ function DetailsTable({
           <div className="virtual-spacer file-spacer" style={{ height: virtual.totalHeight }}>
             {files.slice(virtual.start, virtual.end).map((file, offset) => (
               <div
-                className={`file-row virtual-row ${selectedId === file.id ? "selected" : ""}`}
+                className={`file-row virtual-row ${selectedFileIds.has(file.id) ? "selected" : ""}`}
                 key={file.id}
-                onClick={() => onSelect(file.id)}
+                onClick={(event) => selectFile(file, event)}
                 onContextMenu={(event) => {
                   event.preventDefault();
-                  onContextMenu(file, event.screenX, event.screenY);
+                  const contextFiles = selectedFileIds.has(file.id) && selectedVisibleFiles.length > 0 ? selectedVisibleFiles : [file];
+                  if (!selectedFileIds.has(file.id)) {
+                    onSelectionChange(new Set([file.id]), file.id);
+                  }
+                  onContextMenu(contextFiles, event.screenX, event.screenY);
                 }}
                 style={{ transform: `translateY(${(virtual.start + offset) * FILE_ROW_HEIGHT}px)` }}
               >
@@ -1075,6 +1098,8 @@ export function App() {
   const [progress, setProgress] = useState<ScanProgress | null>(null);
   const [scanning, setScanning] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [selectedFileIds, setSelectedFileIds] = useState<Set<number>>(new Set());
+  const [focusedFileId, setFocusedFileId] = useState<number | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [chartMode, setChartMode] = useState<ChartMode>("treemap");
   const [activeTab, setActiveTab] = useState<AppTab>("overview");
@@ -1118,6 +1143,11 @@ export function App() {
   }, [result]);
 
   useEffect(() => {
+    setSelectedFileIds(new Set());
+    setFocusedFileId(null);
+  }, [result, selectedId, search]);
+
+  useEffect(() => {
     const query = search.trim().toLowerCase();
     if (!query || !result) return;
     const byNodeId = new Map(result.nodes.map((node) => [node.id, node]));
@@ -1147,6 +1177,8 @@ export function App() {
     setScanning(true);
     setResult(null);
     setSelectedId(null);
+    setSelectedFileIds(new Set());
+    setFocusedFileId(null);
     setExpanded(new Set());
     setDuplicates([]);
     setCompare(null);
@@ -1193,13 +1225,28 @@ export function App() {
     if (result) void api.saveIndex(result);
   }, [api, result]);
 
-  const openItemContextMenu = useCallback(
+  const openTreeItemContextMenu = useCallback(
     (node: ScanNode, x: number, y: number) => {
       setSelectedId(node.id);
       void api.showItemContextMenu({ path: node.path, x: Math.round(x), y: Math.round(y) });
     },
     [api]
   );
+
+  const openFileContextMenu = useCallback(
+    (nodes: ScanNode[], x: number, y: number) => {
+      const paths = nodes.map((node) => node.path);
+      const firstPath = paths[0];
+      if (!firstPath) return;
+      void api.showItemContextMenu({ path: firstPath, paths, x: Math.round(x), y: Math.round(y) });
+    },
+    [api]
+  );
+
+  const updateFileSelection = useCallback((ids: Set<number>, focusedId: number | null) => {
+    setSelectedFileIds(ids);
+    setFocusedFileId(focusedId);
+  }, []);
 
   async function compareWithIndex() {
     if (!result) return;
@@ -1373,7 +1420,7 @@ export function App() {
                         search={search}
                         onSelect={setSelectedId}
                         onToggle={toggleExpanded}
-                        onContextMenu={openItemContextMenu}
+                        onContextMenu={openTreeItemContextMenu}
                       />
                     </section>
                   </div>
@@ -1399,7 +1446,7 @@ export function App() {
                         search={search}
                         onSelect={setSelectedId}
                         onToggle={toggleExpanded}
-                        onContextMenu={openItemContextMenu}
+                        onContextMenu={openTreeItemContextMenu}
                       />
                     </section>
                     <div
@@ -1412,9 +1459,11 @@ export function App() {
                     <DetailsTable
                       result={result}
                       selectedId={deferredSelectedId}
+                      selectedFileIds={selectedFileIds}
+                      focusedFileId={focusedFileId}
                       search={search}
-                      onContextMenu={openItemContextMenu}
-                      onSelect={setSelectedId}
+                      onContextMenu={openFileContextMenu}
+                      onSelectionChange={updateFileSelection}
                     />
                   </div>
                 )}
